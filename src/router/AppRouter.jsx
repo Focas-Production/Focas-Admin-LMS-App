@@ -9,6 +9,7 @@ import UsersPage from '../pages/admin/UsersPage'
 import ProductsPage from '../pages/admin/ProductsPage'
 import PurchasesPage from '../pages/admin/PurchasesPage'
 import ContentPage from '../pages/admin/ContentPage'
+import SubjectsPage from '../pages/admin/SubjectsPage'
 
 function RootRedirect() {
   const { user, loading } = useAuth()
@@ -28,6 +29,7 @@ export default function AppRouter() {
         <Route path="products"  element={<ProductsPage />} />
         <Route path="purchases" element={<PurchasesPage />} />
         <Route path="content"   element={<ContentPage />} />
+        <Route path="subjects"  element={<SubjectsPage />} />
       </Route>
 
       <Route path="*" element={<Navigate to="/" replace />} />
