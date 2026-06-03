@@ -2,7 +2,11 @@ import { useState, useEffect } from 'react'
 import { apiFetch } from '../../api'
 
 function fmtDate(d) {
-  return d ? new Date(d).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : '—'
+  if (!d) return '—'
+  const date = new Date(d)
+  const datePart = date.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
+  const timePart = date.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true })
+  return `${datePart}, ${timePart}`
 }
 
 function fmtDuration(sec) {
@@ -124,6 +128,137 @@ function ProgressModal({ user, onClose }) {
           <div className="text-xs text-gray-400">
             {(data?.progress || []).length} videos tracked
           </div>
+          <button onClick={onClose} className="px-4 py-2 text-sm text-gray-600 border border-gray-200 rounded-xl hover:bg-gray-50">
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function AccessModal({ user, onClose, onUpdated }) {
+  const [access,   setAccess]   = useState([])
+  const [loading,  setLoading]  = useState(true)
+  const [saving,   setSaving]   = useState(false)
+  const [error,    setError]    = useState('')
+  const [editingId, setEditingId] = useState(null)
+  const [editDate, setEditDate] = useState('')
+
+  useEffect(() => {
+    apiFetch(`/api/admin/users/${user._id}/access`)
+      .then(d => setAccess(d.productAccess || []))
+      .catch(() => setAccess([]))
+      .finally(() => setLoading(false))
+  }, [user._id])
+
+  async function handleUpdateAccess(productId) {
+    if (!editDate) return setError('Please select a date')
+    setSaving(true); setError('')
+    try {
+      await apiFetch(`/api/admin/users/${user._id}/access/${productId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ expiresAt: new Date(editDate) }),
+      })
+      setEditingId(null)
+      setEditDate('')
+      setAccess(prev => prev.map(a =>
+        a.productId === productId ? { ...a, expiresAt: new Date(editDate) } : a
+      ))
+      onUpdated?.()
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40">
+      <div className="bg-white rounded-2xl w-full max-w-2xl shadow-2xl overflow-hidden">
+        <div className="px-5 py-4 border-b flex items-center justify-between">
+          <div>
+            <h2 className="font-bold text-gray-900">Manage Access</h2>
+            <p className="text-xs text-gray-400 mt-0.5">{user.name || user.phoneNumber}</p>
+          </div>
+          <button onClick={onClose} className="w-7 h-7 rounded-full flex items-center justify-center hover:bg-gray-100">
+            <svg className="w-4 h-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        <div className="px-5 py-4 max-h-[65vh] overflow-y-auto">
+          {loading ? (
+            <div className="space-y-3">
+              {[1,2,3].map(i => <div key={i} className="h-12 bg-gray-100 rounded-xl animate-pulse" />)}
+            </div>
+          ) : access.length === 0 ? (
+            <div className="text-center py-12">
+              <svg className="w-10 h-10 mx-auto mb-3 text-gray-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M20.354 15.354A9 9 0 015.646 5.646 9 9 0 1020.354 15.354z" />
+              </svg>
+              <p className="text-sm font-medium text-gray-400">No purchases yet</p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {access.map(a => {
+                const isEditing = editingId === a.productId
+                const expireDate = new Date(a.expiresAt)
+                const isExpired = a.isExpired
+                return (
+                  <div key={a.productId} className={`p-4 rounded-xl border ${
+                    isExpired ? 'border-red-200 bg-red-50' : 'border-gray-200 bg-gray-50'
+                  }`}>
+                    <div className="flex items-start justify-between gap-3 mb-2">
+                      <div className="flex-1 min-w-0">
+                        <p className="font-medium text-gray-900">{a.productName}</p>
+                        <p className="text-xs text-gray-500 mt-0.5">
+                          Purchased on {fmtDate(a.purchaseDate)}
+                        </p>
+                      </div>
+                      <span className={`text-xs font-semibold px-2 py-1 rounded-full flex-shrink-0 ${
+                        isExpired ? 'bg-red-200 text-red-800' : 'bg-green-200 text-green-800'
+                      }`}>
+                        {isExpired ? 'Expired' : `${a.daysRemaining}d left`}
+                      </span>
+                    </div>
+                    {!isEditing ? (
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-sm text-gray-600">
+                          Expires: <span className="font-medium">{fmtDate(a.expiresAt)}</span>
+                        </p>
+                        <button onClick={() => {
+                          setEditingId(a.productId)
+                          setEditDate(expireDate.toISOString().split('T')[0])
+                        }}
+                          className="text-xs font-semibold text-indigo-600 hover:text-indigo-700">
+                          Edit
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        <input type="date" value={editDate} onChange={e => setEditDate(e.target.value)}
+                          className="flex-1 px-3 py-2 text-sm border border-indigo-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                        <button onClick={() => handleUpdateAccess(a.productId)} disabled={saving}
+                          className="px-3 py-2 text-xs font-semibold text-white bg-indigo-600 rounded-lg hover:bg-indigo-700 disabled:opacity-50">
+                          {saving ? 'Saving…' : 'Save'}
+                        </button>
+                        <button onClick={() => setEditingId(null)}
+                          className="px-3 py-2 text-xs font-semibold text-gray-600 bg-gray-200 rounded-lg hover:bg-gray-300">
+                          Cancel
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+          {error && <p className="text-sm text-red-500 mt-3">{error}</p>}
+        </div>
+
+        <div className="px-5 py-3 border-t flex justify-end">
           <button onClick={onClose} className="px-4 py-2 text-sm text-gray-600 border border-gray-200 rounded-xl hover:bg-gray-50">
             Close
           </button>
@@ -275,6 +410,7 @@ export default function UsersPage() {
   const [loading, setLoading] = useState(true)
   const [grantUser,    setGrantUser]    = useState(null)
   const [progressUser, setProgressUser] = useState(null)
+  const [accessUser,   setAccessUser]   = useState(null)
 
   function load() {
     setLoading(true)
@@ -313,6 +449,8 @@ export default function UsersPage() {
               <th className="text-left px-5 py-3.5">Phone</th>
               <th className="text-left px-5 py-3.5">Email</th>
               <th className="text-left px-5 py-3.5">Role</th>
+              <th className="text-left px-5 py-3.5">Device</th>
+              <th className="text-left px-5 py-3.5">Last Login</th>
               <th className="text-left px-5 py-3.5">Enrolled</th>
               <th className="text-left px-5 py-3.5">Joined</th>
               <th className="px-5 py-3.5" />
@@ -322,13 +460,13 @@ export default function UsersPage() {
             {loading ? (
               Array(8).fill(0).map((_, i) => (
                 <tr key={i} className="border-b border-gray-50">
-                  {Array(7).fill(0).map((_, j) => (
+                  {Array(9).fill(0).map((_, j) => (
                     <td key={j} className="px-5 py-3.5"><div className="h-4 bg-gray-100 rounded animate-pulse w-24" /></td>
                   ))}
                 </tr>
               ))
             ) : users.length === 0 ? (
-              <tr><td colSpan={7} className="px-5 py-10 text-center text-gray-400">No users found</td></tr>
+              <tr><td colSpan={9} className="px-5 py-10 text-center text-gray-400">No users found</td></tr>
             ) : users.map(u => {
               const courses = [
                 ...(u.access?.website?.courses || []),
@@ -355,6 +493,20 @@ export default function UsersPage() {
                     </span>
                   </td>
                   <td className="px-5 py-3.5">
+                    {u.activeSession ? (
+                      <div className="flex items-center gap-2">
+                        <span className="inline-block w-2 h-2 bg-green-500 rounded-full"></span>
+                        <span className="text-xs text-gray-700 font-medium">{u.activeSession.deviceName || '—'}</span>
+                        <span className="text-xs text-gray-400">({u.activeSession.deviceType || '—'})</span>
+                      </div>
+                    ) : (
+                      <span className="text-xs text-gray-300">Not logged in</span>
+                    )}
+                  </td>
+                  <td className="px-5 py-3.5 text-gray-400 text-xs">
+                    {u.activeSession?.lastLoginTime ? fmtDate(u.activeSession.lastLoginTime) : '—'}
+                  </td>
+                  <td className="px-5 py-3.5">
                     {courses.length > 0
                       ? <span className="text-xs font-semibold bg-green-100 text-green-700 px-2 py-0.5 rounded-full">{courses.length} course{courses.length !== 1 ? 's' : ''}</span>
                       : <span className="text-xs text-gray-300">None</span>
@@ -370,6 +522,13 @@ export default function UsersPage() {
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
                           </svg>
                           Grant
+                        </button>
+                        <button onClick={() => setAccessUser(u)}
+                          className="flex items-center gap-1.5 text-xs font-semibold text-blue-600 bg-blue-50 px-3 py-1.5 rounded-lg hover:bg-blue-100 transition-colors whitespace-nowrap">
+                          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                          </svg>
+                          Access
                         </button>
                         <button onClick={() => setProgressUser(u)}
                           className="flex items-center gap-1.5 text-xs font-semibold text-emerald-600 bg-emerald-50 px-3 py-1.5 rounded-lg hover:bg-emerald-100 transition-colors whitespace-nowrap">
@@ -405,6 +564,14 @@ export default function UsersPage() {
           user={grantUser}
           onClose={() => setGrantUser(null)}
           onGranted={load}
+        />
+      )}
+
+      {accessUser && (
+        <AccessModal
+          user={accessUser}
+          onClose={() => setAccessUser(null)}
+          onUpdated={load}
         />
       )}
 
