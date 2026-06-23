@@ -261,7 +261,10 @@ function UploadDrawer({ products, subjects, recentFolders, onClose, onUploaded }
   const [desc,     setDesc]     = useState('')
   const [category, setCategory] = useState('lecture')
   const [folder,        setFolder]       = useState('')
+  const [unit,          setUnit]         = useState('')
   const [tsType,        setTsType]       = useState('chapter_wise')
+  const [testDuration,  setTestDuration] = useState('180')
+  const [totalMarks,    setTotalMarks]   = useState('100')
   const [progress,      setProgress]     = useState(0)
   const [uploading,     setUploading]    = useState(false)
   const [phase,         setPhase]        = useState('')
@@ -303,8 +306,13 @@ function UploadDrawer({ products, subjects, recentFolders, onClose, onUploaded }
     if (!file)               e.file     = 'Please select a file'
     if (!title.trim())       e.title    = 'Title is required'
     if (!folder.trim())      e.folder   = 'Chapter / folder name is required'
+    if (category === 'lecture' && !unit.trim()) e.unit = 'Unit / Part is required for lectures'
     if (!subjectIds.length)  e.subjects = 'Select at least one subject'
     if (category === 'test_series' && !tsType) e.tsType = 'Select a test series type'
+    if (category === 'test_series') {
+      if (!(parseInt(testDuration, 10) > 0)) e.testDuration = 'Enter a valid duration'
+      if (!(parseInt(totalMarks, 10)   > 0)) e.totalMarks   = 'Enter total marks'
+    }
     return e
   }
 
@@ -329,7 +337,7 @@ function UploadDrawer({ products, subjects, recentFolders, onClose, onUploaded }
             title: title.trim(), subjectIds,
             description: desc.trim(), order: 0, productIds,
             fileSize: file.size, fileName: file.name,
-            category, folder: folder.trim(),
+            category, folder: folder.trim(), unit: unit.trim(),
           }),
         })
       } catch (err) {
@@ -376,8 +384,11 @@ function UploadDrawer({ products, subjects, recentFolders, onClose, onUploaded }
     productIds.forEach(id => form.append('productIds', id))
     form.append('category', category)
     form.append('folder', folder.trim())
+    form.append('unit', unit.trim())
     if (category === 'test_series') {
       form.append('testSeriesType', tsType)
+      form.append('testDuration', testDuration)
+      form.append('totalMarks', totalMarks)
       if (answerFile) form.append('answerFile', answerFile)
     }
 
@@ -439,6 +450,32 @@ function UploadDrawer({ products, subjects, recentFolders, onClose, onUploaded }
             }
           </div>
 
+          {/* Step 1b — Unit / Part (groups files within a chapter) */}
+          <div>
+            <label className="block text-xs font-semibold text-gray-700 mb-1.5">
+              Unit / Part {category === 'lecture'
+                ? <span className="text-red-500">*</span>
+                : <span className="text-gray-400 font-normal">(optional)</span>}
+              <span className="text-gray-400 font-normal ml-1">— pick existing or type new</span>
+            </label>
+            <input
+              list="unit-suggestions"
+              value={unit}
+              onChange={e => { setUnit(e.target.value); if (e.target.value.trim()) clearErr('unit') }}
+              placeholder="e.g. Unit 1: AS 1 — Disclosure of Accounting Policies"
+              className="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-400"
+            />
+            <datalist id="unit-suggestions">
+              {(recentFolders.find(f => f.folder === folder.trim())?.units || []).map(u => (
+                <option key={u} value={u} />
+              ))}
+            </datalist>
+            {errors.unit
+              ? <p className="text-xs text-red-500 mt-1 flex items-center gap-1"><svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd"/></svg>{errors.unit}</p>
+              : unit.trim() && <p className="text-xs text-indigo-600 mt-1">Under <strong>{folder.trim() || 'chapter'}</strong> → <strong>{unit.trim()}</strong></p>
+            }
+          </div>
+
           {/* Step 2 — Category */}
           <div>
             <label className="block text-xs font-semibold text-gray-700 mb-2">
@@ -483,6 +520,30 @@ function UploadDrawer({ products, subjects, recentFolders, onClose, onUploaded }
                 ))}
               </div>
               {errors.tsType && <p className="text-xs text-red-500 mt-1">{errors.tsType}</p>}
+            </div>
+          )}
+
+          {/* Test duration + total marks */}
+          {category === 'test_series' && (
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-semibold text-gray-700 mb-1.5">
+                  Duration (min) <span className="text-red-500">*</span>
+                </label>
+                <input type="number" min="1" value={testDuration}
+                  onChange={e => { setTestDuration(e.target.value); clearErr('testDuration') }}
+                  className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-400" />
+                {errors.testDuration && <p className="text-xs text-red-500 mt-1">{errors.testDuration}</p>}
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-gray-700 mb-1.5">
+                  Total Marks <span className="text-red-500">*</span>
+                </label>
+                <input type="number" min="1" value={totalMarks}
+                  onChange={e => { setTotalMarks(e.target.value); clearErr('totalMarks') }}
+                  className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-400" />
+                {errors.totalMarks && <p className="text-xs text-red-500 mt-1">{errors.totalMarks}</p>}
+              </div>
             </div>
           )}
 
@@ -641,7 +702,10 @@ function EditModal({ item, products, subjects, onClose, onSaved }) {
   const [order,    setOrder]    = useState(String(item.order ?? 0))
   const [category, setCategory] = useState(item.category || 'lecture')
   const [folder,   setFolder]   = useState(item.folder || '')
+  const [unit,     setUnit]     = useState(item.unit || '')
   const [tsType,   setTsType]   = useState(item.testSeriesType || 'chapter_wise')
+  const [testDuration, setTestDuration] = useState(String(item.testDuration ?? 180))
+  const [totalMarks,   setTotalMarks]   = useState(String(item.totalMarks ?? 100))
   const [saving,   setSaving]   = useState(false)
   const [error,    setError]    = useState('')
 
@@ -653,8 +717,10 @@ function EditModal({ item, products, subjects, onClose, onSaved }) {
         body: JSON.stringify({
           title: title.trim(), subjectIds, productIds,
           description: desc.trim(), order: parseInt(order),
-          category, folder: folder.trim(),
+          category, folder: folder.trim(), unit: unit.trim(),
           testSeriesType: category === 'test_series' ? tsType : null,
+          testDuration: category === 'test_series' ? parseInt(testDuration, 10) || 180 : null,
+          totalMarks:   category === 'test_series' ? parseInt(totalMarks, 10)   || 100 : null,
         }),
       })
       onSaved(data.content)
@@ -710,11 +776,35 @@ function EditModal({ item, products, subjects, onClose, onSaved }) {
             </div>
           )}
 
+          {/* Test duration + total marks */}
+          {category === 'test_series' && (
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs font-semibold text-gray-500 mb-1 block">Duration (min)</label>
+                <input type="number" min="1" value={testDuration} onChange={e => setTestDuration(e.target.value)}
+                  className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-400" />
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-gray-500 mb-1 block">Total Marks</label>
+                <input type="number" min="1" value={totalMarks} onChange={e => setTotalMarks(e.target.value)}
+                  className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-400" />
+              </div>
+            </div>
+          )}
+
           {/* Folder */}
           <div>
             <label className="text-xs font-semibold text-gray-500 mb-1 block">Chapter / Folder Name</label>
             <input value={folder} onChange={e => setFolder(e.target.value)}
               placeholder="e.g. Chapter 3 — Heads of Income"
+              className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-400" />
+          </div>
+
+          {/* Unit / Part */}
+          <div>
+            <label className="text-xs font-semibold text-gray-500 mb-1 block">Unit / Part</label>
+            <input value={unit} onChange={e => setUnit(e.target.value)}
+              placeholder="e.g. Unit 1: AS 1 — Disclosure of Accounting Policies"
               className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-400" />
           </div>
 
@@ -1133,6 +1223,7 @@ export default function ContentPage() {
                           </div>
                           <div className="min-w-0">
                             <p className="font-medium text-gray-900 truncate max-w-[220px]">{item.title}</p>
+                            {item.unit && <p className="text-[11px] text-indigo-500 truncate max-w-[220px]">{item.unit}</p>}
                             {item.status==='processing' && (
                               <span className="inline-flex items-center gap-1 text-xs text-amber-600 font-medium">
                                 <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>

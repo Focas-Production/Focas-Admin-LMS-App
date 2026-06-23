@@ -138,6 +138,190 @@ function ContentAccessPanel({ product, subjects }) {
   )
 }
 
+// ─── Test-series access (independent of content access) ─────────────────────────
+function TestSeriesAccessPanel({ product, subjects }) {
+  const ts = product.testSeriesAccess || {}
+  const [enabled,    setEnabled]    = useState(!!ts.enabled)
+  const [levels,     setLevels]     = useState(ts.levels ?? [])
+  const [subjectIds, setSubjectIds] = useState(
+    (ts.subjectIds ?? []).map(id => (typeof id === 'object' ? id._id ?? id : id))
+  )
+  const [saving, setSaving] = useState(false)
+  const [saved,  setSaved]  = useState(false)
+  const [error,  setError]  = useState(null)
+
+  const toggleLevel = lv => {
+    setLevels(prev => prev.includes(lv) ? prev.filter(x => x !== lv) : [...prev, lv])
+    setSaved(false)
+  }
+
+  const handleSave = async () => {
+    setSaving(true); setError(null); setSaved(false)
+    try {
+      await apiFetch(`/api/admin/products/${product._id}/test-series-access`, {
+        method: 'PUT',
+        body: JSON.stringify({ enabled, levels, subjectIds }),
+      })
+      setSaved(true)
+      setTimeout(() => setSaved(false), 2500)
+    } catch (err) {
+      setError(err.message || 'Save failed')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const orig = {
+    enabled: !!ts.enabled,
+    levels: [...(ts.levels ?? [])].sort(),
+    subjectIds: [...((ts.subjectIds ?? []).map(id => (typeof id === 'object' ? id._id ?? id : id)))].sort(),
+  }
+  const dirty =
+    enabled !== orig.enabled ||
+    JSON.stringify([...levels].sort()) !== JSON.stringify(orig.levels) ||
+    JSON.stringify([...subjectIds].sort()) !== JSON.stringify(orig.subjectIds)
+
+  return (
+    <div className="mt-3 pt-3 border-t border-gray-100">
+      <label className="flex items-center justify-between cursor-pointer mb-2">
+        <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Test Series Access</p>
+        <span className="relative inline-flex items-center">
+          <input type="checkbox" checked={enabled} onChange={() => { setEnabled(v => !v); setSaved(false) }} className="sr-only peer" />
+          <span className="w-9 h-5 bg-gray-200 rounded-full peer-checked:bg-emerald-500 transition-colors" />
+          <span className="absolute left-0.5 top-0.5 w-4 h-4 bg-white rounded-full transition-transform peer-checked:translate-x-4" />
+        </span>
+      </label>
+
+      {!enabled ? (
+        <p className="text-[11px] text-gray-400">This product does not grant test-series access.</p>
+      ) : (
+        <>
+          <div className="mb-3">
+            <p className="text-[11px] text-gray-400 mb-1.5">Grant entire levels (all subjects in the level)</p>
+            <div className="flex flex-wrap gap-2">
+              {CA_LEVELS.map(lv => (
+                <label key={lv} className={`flex items-center gap-1.5 text-xs font-medium cursor-pointer ${LEVEL_CHECK[lv]}`}>
+                  <input type="checkbox" checked={levels.includes(lv)} onChange={() => toggleLevel(lv)}
+                    className="rounded border-gray-300 focus:ring-emerald-500" />
+                  {lv}
+                </label>
+              ))}
+            </div>
+          </div>
+
+          {subjects.length > 0 && (
+            <div className="mb-3">
+              <p className="text-[11px] text-gray-400 mb-1.5">Or grant specific subjects only</p>
+              <SubjectPicker subjects={subjects} selected={subjectIds} onChange={ids => { setSubjectIds(ids); setSaved(false) }} />
+            </div>
+          )}
+        </>
+      )}
+
+      <div className="flex items-center gap-2 mt-2">
+        <button onClick={handleSave} disabled={saving || (!dirty && !saved)}
+          className="text-xs px-3 py-1 rounded-lg bg-emerald-600 text-white font-medium disabled:opacity-40 hover:bg-emerald-700 transition-colors">
+          {saving ? 'Saving…' : 'Save Test Access'}
+        </button>
+        {saved && <span className="text-xs text-green-600 font-medium">Saved</span>}
+        {error && <span className="text-xs text-red-500">{error}</span>}
+      </div>
+    </div>
+  )
+}
+
+// ─── Lecture (video) access (independent of content access) ──────────────────────
+function LectureAccessPanel({ product, subjects }) {
+  const la = product.lectureAccess || {}
+  const [enabled,    setEnabled]    = useState(!!la.enabled)
+  const [levels,     setLevels]     = useState(la.levels ?? [])
+  const [subjectIds, setSubjectIds] = useState(
+    (la.subjectIds ?? []).map(id => (typeof id === 'object' ? id._id ?? id : id))
+  )
+  const [saving, setSaving] = useState(false)
+  const [saved,  setSaved]  = useState(false)
+  const [error,  setError]  = useState(null)
+
+  const toggleLevel = lv => {
+    setLevels(prev => prev.includes(lv) ? prev.filter(x => x !== lv) : [...prev, lv])
+    setSaved(false)
+  }
+
+  const handleSave = async () => {
+    setSaving(true); setError(null); setSaved(false)
+    try {
+      await apiFetch(`/api/admin/products/${product._id}/lecture-access`, {
+        method: 'PUT',
+        body: JSON.stringify({ enabled, levels, subjectIds }),
+      })
+      setSaved(true)
+      setTimeout(() => setSaved(false), 2500)
+    } catch (err) {
+      setError(err.message || 'Save failed')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const orig = {
+    enabled: !!la.enabled,
+    levels: [...(la.levels ?? [])].sort(),
+    subjectIds: [...((la.subjectIds ?? []).map(id => (typeof id === 'object' ? id._id ?? id : id)))].sort(),
+  }
+  const dirty =
+    enabled !== orig.enabled ||
+    JSON.stringify([...levels].sort()) !== JSON.stringify(orig.levels) ||
+    JSON.stringify([...subjectIds].sort()) !== JSON.stringify(orig.subjectIds)
+
+  return (
+    <div className="mt-3 pt-3 border-t border-gray-100">
+      <label className="flex items-center justify-between cursor-pointer mb-2">
+        <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Lecture (Video) Access</p>
+        <span className="relative inline-flex items-center">
+          <input type="checkbox" checked={enabled} onChange={() => { setEnabled(v => !v); setSaved(false) }} className="sr-only peer" />
+          <span className="w-9 h-5 bg-gray-200 rounded-full peer-checked:bg-blue-500 transition-colors" />
+          <span className="absolute left-0.5 top-0.5 w-4 h-4 bg-white rounded-full transition-transform peer-checked:translate-x-4" />
+        </span>
+      </label>
+
+      {!enabled ? (
+        <p className="text-[11px] text-gray-400">No lecture videos for this product (e.g. Lite/Pro — Q.Bank &amp; Test Series only).</p>
+      ) : (
+        <>
+          <div className="mb-3">
+            <p className="text-[11px] text-gray-400 mb-1.5">Grant entire levels (all subjects in the level)</p>
+            <div className="flex flex-wrap gap-2">
+              {CA_LEVELS.map(lv => (
+                <label key={lv} className={`flex items-center gap-1.5 text-xs font-medium cursor-pointer ${LEVEL_CHECK[lv]}`}>
+                  <input type="checkbox" checked={levels.includes(lv)} onChange={() => toggleLevel(lv)}
+                    className="rounded border-gray-300 focus:ring-blue-500" />
+                  {lv}
+                </label>
+              ))}
+            </div>
+          </div>
+
+          {subjects.length > 0 && (
+            <div className="mb-3">
+              <p className="text-[11px] text-gray-400 mb-1.5">Or grant specific subjects only</p>
+              <SubjectPicker subjects={subjects} selected={subjectIds} onChange={ids => { setSubjectIds(ids); setSaved(false) }} />
+            </div>
+          )}
+        </>
+      )}
+
+      <div className="flex items-center gap-2 mt-2">
+        <button onClick={handleSave} disabled={saving || (!dirty && !saved)}
+          className="text-xs px-3 py-1 rounded-lg bg-blue-600 text-white font-medium disabled:opacity-40 hover:bg-blue-700 transition-colors">
+          {saving ? 'Saving…' : 'Save Lecture Access'}
+        </button>
+        {saved && <span className="text-xs text-green-600 font-medium">Saved</span>}
+        {error && <span className="text-xs text-red-500">{error}</span>}
+      </div>
+    </div>
+  )
+}
+
 // ─── Main page ─────────────────────────────────────────────────────────────────
 export default function ProductsPage() {
   const [products,  setProducts]  = useState([])
@@ -230,7 +414,11 @@ export default function ProductsPage() {
 
                   {/* Expandable panel */}
                   {expanded[p._id] && (
-                    <ContentAccessPanel product={p} subjects={subjects} />
+                    <>
+                      <ContentAccessPanel product={p} subjects={subjects} />
+                      <LectureAccessPanel product={p} subjects={subjects} />
+                      <TestSeriesAccessPanel product={p} subjects={subjects} />
+                    </>
                   )}
                 </div>
               )
