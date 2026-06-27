@@ -885,7 +885,7 @@ export default function ContentPage() {
   const LIMIT = 15
 
   useEffect(() => {
-    apiFetch('/api/admin/products').then(d => setProducts(d.products || [])).catch(() => {})
+    apiFetch('/api/admin/products?limit=10000').then(d => setProducts(d.products || [])).catch(() => {})
     apiFetch('/api/admin/subjects').then(d => setSubjects(d.subjects || [])).catch(() => {})
     apiFetch('/api/admin/content/folders').then(d => setAllFolders(d.folders || [])).catch(() => {})
   }, [])

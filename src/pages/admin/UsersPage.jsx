@@ -276,7 +276,7 @@ function GrantModal({ user, onClose, onGranted }) {
   const [purchases, setPurchases] = useState([])
 
   useEffect(() => {
-    apiFetch('/api/admin/products').then(d => setProducts(d.products || [])).catch(() => {})
+    apiFetch('/api/admin/products?limit=10000').then(d => setProducts(d.products || [])).catch(() => {})
     apiFetch(`/api/admin/users/${user._id}`).then(d => setPurchases(d.purchases || [])).catch(() => {})
   }, [user._id])
 

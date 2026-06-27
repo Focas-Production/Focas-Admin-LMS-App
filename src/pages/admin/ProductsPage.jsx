@@ -331,7 +331,7 @@ export default function ProductsPage() {
 
   useEffect(() => {
     Promise.all([
-      apiFetch('/api/admin/products').then(d => d.products || []),
+      apiFetch('/api/admin/products?limit=10000').then(d => d.products || []),
       apiFetch('/api/admin/subjects').then(d => d.subjects || []),
     ])
       .then(([prods, subs]) => { setProducts(prods); setSubjects(subs) })
