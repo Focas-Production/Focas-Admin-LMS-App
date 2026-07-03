@@ -268,6 +268,110 @@ function AccessModal({ user, onClose, onUpdated }) {
   )
 }
 
+function TestLimitModal({ user, onClose, onUpdated }) {
+  const [value,   setValue]   = useState('')        // '' ⇒ use default
+  const [dflt,    setDflt]    = useState(1)
+  const [loading, setLoading] = useState(true)
+  const [saving,  setSaving]  = useState(false)
+  const [error,   setError]   = useState('')
+
+  useEffect(() => {
+    apiFetch(`/api/admin/users/${user._id}`)
+      .then(d => {
+        setDflt(d.defaultTestAttemptLimit ?? 1)
+        const lim = d.user?.testAttemptLimit
+        setValue(lim == null ? '' : String(lim))
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false))
+  }, [user._id])
+
+  async function save(next) {
+    setSaving(true); setError('')
+    try {
+      await apiFetch(`/api/admin/users/${user._id}/test-attempt-limit`, {
+        method: 'PATCH',
+        body: JSON.stringify({ testAttemptLimit: next }),
+      })
+      onUpdated?.()
+      onClose()
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  function handleSave() {
+    if (value === '') return save(null)
+    const n = Number(value)
+    if (!Number.isInteger(n) || n < 1) return setError('Enter a whole number of 1 or more')
+    save(n)
+  }
+
+  const effective = value === '' ? dflt : Number(value) || dflt
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40">
+      <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl overflow-hidden">
+        <div className="px-5 py-4 border-b flex items-center justify-between">
+          <div>
+            <h2 className="font-bold text-gray-900">Test Series Limit</h2>
+            <p className="text-xs text-gray-400 mt-0.5">{user.name || user.phoneNumber}</p>
+          </div>
+          <button onClick={onClose} className="w-7 h-7 rounded-full flex items-center justify-center hover:bg-gray-100">
+            <svg className="w-4 h-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        <div className="px-5 py-4 space-y-4">
+          <p className="text-sm text-gray-600">
+            How many times this student may <strong>write &amp; submit each test paper</strong>.
+            Leave blank to use the system default (<strong>{dflt}</strong>).
+          </p>
+
+          {loading ? (
+            <div className="h-11 bg-gray-100 rounded-xl animate-pulse" />
+          ) : (
+            <div>
+              <label className="block text-xs font-semibold text-gray-600 mb-1.5">Attempts per test</label>
+              <input
+                type="number" min="1" step="1" value={value}
+                onChange={e => setValue(e.target.value.replace(/[^\d]/g, ''))}
+                placeholder={`Default (${dflt})`}
+                className="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500" />
+              <p className="text-xs text-gray-400 mt-1.5">
+                Effective limit: <span className="font-semibold text-gray-600">{effective}</span> attempt{effective !== 1 ? 's' : ''} per test
+                {value === '' && ' (using default)'}
+              </p>
+            </div>
+          )}
+
+          {error && <p className="text-sm text-red-500">{error}</p>}
+        </div>
+
+        <div className="px-5 py-4 border-t flex gap-2 justify-between items-center">
+          <button onClick={() => { setValue(''); save(null) }} disabled={saving || loading}
+            className="text-xs font-semibold text-gray-500 hover:text-gray-700 disabled:opacity-40">
+            Reset to default
+          </button>
+          <div className="flex gap-2">
+            <button onClick={onClose} className="px-4 py-2 text-sm text-gray-600 border border-gray-200 rounded-xl hover:bg-gray-50">
+              Cancel
+            </button>
+            <button onClick={handleSave} disabled={saving || loading}
+              className="px-4 py-2 text-sm font-semibold text-white bg-indigo-600 rounded-xl hover:bg-indigo-700 disabled:opacity-50">
+              {saving ? 'Saving…' : 'Save'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function GrantModal({ user, onClose, onGranted }) {
   const [products,  setProducts]  = useState([])
   const [selected,  setSelected]  = useState([])
@@ -411,6 +515,7 @@ export default function UsersPage() {
   const [grantUser,    setGrantUser]    = useState(null)
   const [progressUser, setProgressUser] = useState(null)
   const [accessUser,   setAccessUser]   = useState(null)
+  const [limitUser,    setLimitUser]    = useState(null)
 
   function load() {
     setLoading(true)
@@ -537,6 +642,13 @@ export default function UsersPage() {
                           </svg>
                           Progress
                         </button>
+                        <button onClick={() => setLimitUser(u)}
+                          className="flex items-center gap-1.5 text-xs font-semibold text-amber-600 bg-amber-50 px-3 py-1.5 rounded-lg hover:bg-amber-100 transition-colors whitespace-nowrap">
+                          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                          </svg>
+                          Limit
+                        </button>
                       </div>
                     )}
                   </td>
@@ -579,6 +691,14 @@ export default function UsersPage() {
         <ProgressModal
           user={progressUser}
           onClose={() => setProgressUser(null)}
+        />
+      )}
+
+      {limitUser && (
+        <TestLimitModal
+          user={limitUser}
+          onClose={() => setLimitUser(null)}
+          onUpdated={load}
         />
       )}
     </div>
