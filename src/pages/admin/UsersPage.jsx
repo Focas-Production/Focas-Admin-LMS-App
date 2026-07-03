@@ -268,6 +268,97 @@ function AccessModal({ user, onClose, onUpdated }) {
   )
 }
 
+function AddUserModal({ onClose, onCreated }) {
+  const [name,  setName]  = useState('')
+  const [phone, setPhone] = useState('')
+  const [email, setEmail] = useState('')
+  const [notes, setNotes] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [error,  setError]  = useState('')
+
+  async function handleSave() {
+    if (phone.length !== 10) return setError('Enter a valid 10-digit phone number')
+    setSaving(true); setError('')
+    try {
+      await apiFetch('/api/admin/users', {
+        method: 'POST',
+        body: JSON.stringify({
+          name: name.trim(),
+          phoneNumber: phone,
+          email: email.trim(),
+          notes: notes.trim(),
+        }),
+      })
+      onCreated?.()
+      onClose()
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40">
+      <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl overflow-hidden">
+        <div className="px-5 py-4 border-b flex items-center justify-between">
+          <div>
+            <h2 className="font-bold text-gray-900">Add User</h2>
+            <p className="text-xs text-gray-400 mt-0.5">Role: Student · Source: Custom</p>
+          </div>
+          <button onClick={onClose} className="w-7 h-7 rounded-full flex items-center justify-center hover:bg-gray-100">
+            <svg className="w-4 h-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        <div className="px-5 py-4 space-y-4">
+          <div>
+            <label className="block text-xs font-semibold text-gray-600 mb-1.5">Name</label>
+            <input value={name} onChange={e => setName(e.target.value)} placeholder="Student name"
+              className="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500" />
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-gray-600 mb-1.5">Phone Number <span className="text-red-500">*</span></label>
+            <div className="flex border border-gray-200 rounded-xl overflow-hidden focus-within:ring-2 focus-within:ring-indigo-500">
+              <span className="flex items-center px-3 bg-gray-50 text-gray-500 text-sm border-r border-gray-200">+91</span>
+              <input value={phone} type="tel" placeholder="10-digit mobile"
+                onChange={e => setPhone(e.target.value.replace(/\D/g, '').slice(0, 10))}
+                className="flex-1 px-3 py-2.5 text-sm outline-none" />
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-gray-600 mb-1.5">Email <span className="text-gray-400 font-normal">(optional)</span></label>
+            <input value={email} type="email" onChange={e => setEmail(e.target.value)} placeholder="you@example.com"
+              className="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500" />
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-gray-600 mb-1.5">Notes <span className="text-gray-400 font-normal">(optional)</span></label>
+            <textarea value={notes} onChange={e => setNotes(e.target.value)} rows={2} placeholder="Any note about this user…"
+              className="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 resize-none" />
+          </div>
+
+          {error && <p className="text-sm text-red-500">{error}</p>}
+        </div>
+
+        <div className="px-5 py-4 border-t flex gap-2 justify-end">
+          <button onClick={onClose} className="px-4 py-2 text-sm text-gray-600 border border-gray-200 rounded-xl hover:bg-gray-50">
+            Cancel
+          </button>
+          <button onClick={handleSave} disabled={saving || phone.length !== 10}
+            className="px-4 py-2 text-sm font-semibold text-white bg-indigo-600 rounded-xl hover:bg-indigo-700 disabled:opacity-50">
+            {saving ? 'Adding…' : 'Add User'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function TestLimitModal({ user, onClose, onUpdated }) {
   const [value,   setValue]   = useState('')        // '' ⇒ use default
   const [dflt,    setDflt]    = useState(1)
@@ -506,6 +597,123 @@ function GrantModal({ user, onClose, onGranted }) {
   )
 }
 
+function UserDetailDrawer({ user, onClose }) {
+  const [purchases, setPurchases] = useState([])
+  const [loading,   setLoading]   = useState(true)
+
+  useEffect(() => {
+    apiFetch(`/api/admin/users/${user._id}`)
+      .then(d => setPurchases(d.purchases || []))
+      .catch(() => setPurchases([]))
+      .finally(() => setLoading(false))
+  }, [user._id])
+
+  const courses = [
+    ...(user.access?.website?.courses || []),
+    ...(user.access?.shopify?.courses || []),
+    ...(user.access?.combo?.courses   || []),
+  ]
+  const role = user.isAdmin ? 'Admin' : (user.isMentor ? 'Mentor' : 'Student')
+
+  const Row = ({ label, children }) => (
+    <div className="flex items-start justify-between gap-4 py-2.5 border-b border-gray-50">
+      <span className="text-xs font-semibold text-gray-400 uppercase tracking-wide pt-0.5">{label}</span>
+      <span className="text-sm text-gray-800 text-right break-words min-w-0">{children}</span>
+    </div>
+  )
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end bg-black/40" onClick={onClose}>
+      <div className="bg-white w-full max-w-md h-full shadow-2xl overflow-y-auto" onClick={e => e.stopPropagation()}>
+        {/* Header */}
+        <div className="px-5 py-4 border-b flex items-center justify-between sticky top-0 bg-white z-10">
+          <h2 className="font-bold text-gray-900">User Details</h2>
+          <button onClick={onClose} className="w-7 h-7 rounded-full flex items-center justify-center hover:bg-gray-100">
+            <svg className="w-4 h-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        <div className="px-5 py-4">
+          {/* Identity */}
+          <div className="flex items-center gap-3 mb-4">
+            <div className="w-12 h-12 rounded-full bg-indigo-100 flex items-center justify-center text-lg font-bold text-indigo-600 flex-shrink-0">
+              {user.name?.[0]?.toUpperCase() || '?'}
+            </div>
+            <div className="min-w-0">
+              <p className="font-bold text-gray-900 truncate">{user.name || '—'}</p>
+              <div className="flex items-center gap-1.5 mt-1">
+                <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
+                  user.isAdmin ? 'bg-red-100 text-red-600' : user.isMentor ? 'bg-purple-100 text-purple-600' : 'bg-gray-100 text-gray-600'
+                }`}>{role}</span>
+                {user.source && (
+                  <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 capitalize">{user.source}</span>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Notes */}
+          <div className="mb-4">
+            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">Notes</p>
+            <div className={`rounded-xl px-3 py-2.5 text-sm whitespace-pre-wrap break-words ${
+              user.notes ? 'bg-amber-50 text-gray-700 border border-amber-100' : 'bg-gray-50 text-gray-400'
+            }`}>
+              {user.notes || 'No notes'}
+            </div>
+          </div>
+
+          {/* Fields */}
+          <div className="mb-4">
+            <Row label="Phone">{user.phoneNumber || '—'}</Row>
+            <Row label="Email">{user.email || '—'}</Row>
+            <Row label="Role">{role}</Row>
+            <Row label="Source"><span className="capitalize">{user.source || '—'}</span></Row>
+            <Row label="Joined">{fmtDate(user.createdAt)}</Row>
+            <Row label="Last Login">{user.activeSession?.lastLoginTime ? fmtDate(user.activeSession.lastLoginTime) : '—'}</Row>
+            <Row label="Device">
+              {user.activeSession
+                ? `${user.activeSession.deviceName || '—'} (${user.activeSession.deviceType || '—'})`
+                : 'Not logged in'}
+            </Row>
+            <Row label="Test Limit">{user.testAttemptLimit == null ? 'Default' : `${user.testAttemptLimit} / test`}</Row>
+          </div>
+
+          {/* Enrolled courses */}
+          <div className="mb-4">
+            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Enrolled Courses ({courses.length})</p>
+            {courses.length > 0 ? (
+              <div className="flex flex-wrap gap-1.5">
+                {courses.map((c, i) => (
+                  <span key={i} className="text-xs bg-green-100 text-green-700 px-2.5 py-1 rounded-full">{c}</span>
+                ))}
+              </div>
+            ) : <p className="text-sm text-gray-400">None</p>}
+          </div>
+
+          {/* Purchases */}
+          <div>
+            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Purchase History</p>
+            {loading ? (
+              <div className="space-y-2">{[1,2].map(i => <div key={i} className="h-10 bg-gray-100 rounded-xl animate-pulse" />)}</div>
+            ) : purchases.length > 0 ? (
+              <div className="space-y-1.5">
+                {purchases.map(p => (
+                  <div key={p._id} className="flex items-center justify-between gap-2 text-xs bg-gray-50 rounded-lg px-3 py-2">
+                    <span className="text-gray-700 truncate">{(p.items || []).map(i => i.name).join(', ') || '—'}</span>
+                    <span className="text-gray-400 flex-shrink-0">{fmtDate(p.createdAt)}</span>
+                  </div>
+                ))}
+              </div>
+            ) : <p className="text-sm text-gray-400">No purchases</p>}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function UsersPage() {
   const [users,   setUsers]   = useState([])
   const [total,   setTotal]   = useState(0)
@@ -516,6 +724,8 @@ export default function UsersPage() {
   const [progressUser, setProgressUser] = useState(null)
   const [accessUser,   setAccessUser]   = useState(null)
   const [limitUser,    setLimitUser]    = useState(null)
+  const [addingUser,   setAddingUser]   = useState(false)
+  const [detailUser,   setDetailUser]   = useState(null)
 
   function load() {
     setLoading(true)
@@ -537,12 +747,21 @@ export default function UsersPage() {
           <h1 className="text-2xl font-bold text-gray-900">Users</h1>
           <p className="text-gray-400 text-sm mt-0.5">{total} total users</p>
         </div>
-        <div className="relative">
-          <svg className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-          </svg>
-          <input type="text" value={search} onChange={e => { setSearch(e.target.value); setPage(1) }}
-            placeholder="Search users..." className="pl-9 pr-4 py-2 border border-gray-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500 w-56" />
+        <div className="flex items-center gap-3">
+          <div className="relative">
+            <svg className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+            </svg>
+            <input type="text" value={search} onChange={e => { setSearch(e.target.value); setPage(1) }}
+              placeholder="Search users..." className="pl-9 pr-4 py-2 border border-gray-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500 w-56" />
+          </div>
+          <button onClick={() => setAddingUser(true)}
+            className="flex items-center gap-1.5 text-sm font-semibold text-white bg-indigo-600 px-4 py-2 rounded-xl hover:bg-indigo-700 transition-colors whitespace-nowrap">
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+            </svg>
+            Add User
+          </button>
         </div>
       </div>
 
@@ -579,7 +798,8 @@ export default function UsersPage() {
                 ...(u.access?.combo?.courses    || []),
               ]
               return (
-                <tr key={u._id} className="border-b border-gray-50 hover:bg-gray-50 transition-colors">
+                <tr key={u._id} onClick={() => setDetailUser(u)}
+                  className="border-b border-gray-50 hover:bg-gray-50 transition-colors cursor-pointer">
                   <td className="px-5 py-3.5">
                     <div className="flex items-center gap-2.5">
                       <div className="w-7 h-7 rounded-full bg-indigo-100 flex items-center justify-center text-xs font-bold text-indigo-600 flex-shrink-0">
@@ -618,7 +838,7 @@ export default function UsersPage() {
                     }
                   </td>
                   <td className="px-5 py-3.5 text-gray-400 text-xs">{fmtDate(u.createdAt)}</td>
-                  <td className="px-5 py-3.5">
+                  <td className="px-5 py-3.5" onClick={e => e.stopPropagation()}>
                     {!u.isAdmin && (
                       <div className="flex items-center gap-2">
                         <button onClick={() => setGrantUser(u)}
@@ -699,6 +919,20 @@ export default function UsersPage() {
           user={limitUser}
           onClose={() => setLimitUser(null)}
           onUpdated={load}
+        />
+      )}
+
+      {addingUser && (
+        <AddUserModal
+          onClose={() => setAddingUser(false)}
+          onCreated={() => { setPage(1); load() }}
+        />
+      )}
+
+      {detailUser && (
+        <UserDetailDrawer
+          user={detailUser}
+          onClose={() => setDetailUser(null)}
         />
       )}
     </div>
