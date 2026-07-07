@@ -1243,6 +1243,11 @@ export default function ContentPage() {
                             {TS_TYPES.find(t=>t.value===item.testSeriesType)?.label}
                           </p>
                         )}
+                        {item.category==='test_series' && (item.testDuration!=null || item.totalMarks!=null) && (
+                          <p className="text-[10px] text-indigo-500 mt-0.5 font-medium">
+                            {[item.testDuration!=null && `⏱ ${item.testDuration} min`, item.totalMarks!=null && `📝 ${item.totalMarks} marks`].filter(Boolean).join(' · ')}
+                          </p>
+                        )}
                         {item.answerUrl && (
                           <p className="text-[10px] text-rose-400 mt-0.5 font-medium">+ Answer</p>
                         )}

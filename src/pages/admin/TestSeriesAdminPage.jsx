@@ -57,6 +57,7 @@ function SubmissionsView({ showToast }) {
   const [limit, setLimit] = useState(20)
   const [total, setTotal] = useState(0)
   const [totalPages, setTotalPages] = useState(1)
+  const [detailId, setDetailId] = useState(null)   // submission opened in the detail modal
 
   const load = (st = status, pg = page, lim = limit) => {
     setRows(null)
@@ -127,7 +128,8 @@ function SubmissionsView({ showToast }) {
             </thead>
             <tbody>
               {rows.map(r => (
-                <tr key={r._id} className="border-t border-gray-50">
+                <tr key={r._id} onClick={() => setDetailId(r._id)}
+                  className="border-t border-gray-50 cursor-pointer hover:bg-gray-50">
                   <td className="px-3 py-2.5">
                     <p className="text-gray-800 font-medium">{r.studentName || '—'}</p>
                     <p className="text-xs text-gray-400">{r.studentPhone}</p>
@@ -144,7 +146,7 @@ function SubmissionsView({ showToast }) {
                       ? <span className="font-semibold text-emerald-700">{r.awardedMarks}/{r.totalMarks}</span>
                       : r.totalMarks}
                   </td>
-                  <td className="px-3 py-2.5">
+                  <td className="px-3 py-2.5" onClick={e => e.stopPropagation()}>
                     {r.status === 'completed' ? (
                       <span className="text-gray-600">{r.mentor?.name || '—'}</span>
                     ) : (
@@ -191,7 +193,206 @@ function SubmissionsView({ showToast }) {
           </div>
         </div>
       )}
+
+      {detailId && <SubmissionDetailModal id={detailId} onClose={() => setDetailId(null)} />}
     </section>
+  )
+}
+
+// ───────────────────────── submission detail (full drill-down) ─────────────────────────
+function fmtDate(d) {
+  if (!d) return '—'
+  const dt = new Date(d)
+  return Number.isNaN(dt.getTime()) ? '—' : dt.toLocaleString()
+}
+
+// Open a file/document in a new tab. The blank window is opened synchronously (before
+// the await) so browsers don't treat it as a popup and block it.
+async function openInTab(path, onError) {
+  const win = window.open('', '_blank')
+  try {
+    const { url } = await apiFetch(path)
+    if (win) win.location = url
+    else window.location.href = url
+  } catch (e) {
+    if (win) win.close()
+    onError?.(e.message || 'Unable to open document')
+  }
+}
+
+function InfoRow({ label, children }) {
+  return (
+    <div className="flex gap-2 text-sm py-1">
+      <span className="w-32 flex-shrink-0 text-gray-400">{label}</span>
+      <span className="text-gray-800 font-medium break-words">{children}</span>
+    </div>
+  )
+}
+
+function DocBtn({ children, onClick, disabled, color = 'indigo' }) {
+  const styles = {
+    indigo:  'bg-indigo-50 text-indigo-700 hover:bg-indigo-100',
+    emerald: 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100',
+    amber:   'bg-amber-50 text-amber-700 hover:bg-amber-100',
+    rose:    'bg-rose-50 text-rose-700 hover:bg-rose-100',
+  }
+  return (
+    <button onClick={onClick} disabled={disabled}
+      className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold disabled:opacity-50 ${styles[color]}`}>
+      {children}
+    </button>
+  )
+}
+
+function SubmissionDetailModal({ id, onClose }) {
+  const [sub, setSub] = useState(null)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    setSub(null); setError('')
+    apiFetch(`/api/admin/test-submissions/${id}`)
+      .then(d => setSub(d.submission))
+      .catch(e => setError(e.message || 'Failed to load submission'))
+  }, [id])
+
+  const base = `/api/admin/test-submissions/${id}`
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40" onClick={onClose}>
+      <div className="bg-white rounded-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto shadow-2xl" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100 sticky top-0 bg-white">
+          <h2 className="font-bold text-gray-900">Test Submission Details</h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-700 text-lg leading-none">✕</button>
+        </div>
+
+        {error ? (
+          <div className="p-6 text-sm text-red-600">{error}</div>
+        ) : !sub ? (
+          <div className="p-6 text-sm text-gray-400">Loading…</div>
+        ) : (
+          <div className="p-5 space-y-5">
+            {/* Student */}
+            <div className="bg-gray-50 rounded-xl px-4 py-3">
+              <p className="text-xs text-gray-400 mb-1">Student</p>
+              <p className="text-gray-900 font-semibold">{sub.studentName || '—'}</p>
+              <p className="text-sm text-gray-500">{sub.studentPhone || '—'}</p>
+            </div>
+
+            {/* Test info */}
+            <div>
+              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Test</p>
+              <InfoRow label="Test type">{sub.testSeriesType || '—'}</InfoRow>
+              <InfoRow label="Level">{sub.level || '—'}</InfoRow>
+              <InfoRow label="Subject">{sub.subject || '—'}</InfoRow>
+              <InfoRow label="Chapter">{sub.chapter || '—'}</InfoRow>
+              {sub.unit && <InfoRow label="Unit / Part">{sub.unit}</InfoRow>}
+              <InfoRow label="Paper">{sub.fileName || '—'}</InfoRow>
+              <InfoRow label="Duration">{sub.testDuration ? `${sub.testDuration} min` : '—'}</InfoRow>
+              <InfoRow label="Total marks">{sub.totalMarks ?? '—'}</InfoRow>
+              <InfoRow label="Status">
+                <span className={`px-2 py-0.5 rounded-full text-xs font-semibold ${STATUS_STYLE[sub.status] || ''}`}>
+                  {sub.status}{sub.assignedVia ? ` · ${sub.assignedVia}` : ''}
+                </span>
+              </InfoRow>
+              <InfoRow label="Started at">{fmtDate(sub.startedAt)}</InfoRow>
+              <InfoRow label="Submitted at">{fmtDate(sub.submittedAt || sub.createdAt)}</InfoRow>
+            </div>
+
+            {/* Documents */}
+            <div>
+              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Documents</p>
+              <div className="flex flex-wrap gap-2">
+                <DocBtn disabled={!sub.hasQuestionPaper} onClick={() => openInTab(`${base}/question-paper`, setError)}>
+                  📄 Question Paper
+                </DocBtn>
+                <DocBtn color="emerald" disabled={!sub.hasAnswerKey} onClick={() => openInTab(`${base}/answer-key`, setError)}>
+                  ✅ Answer Key
+                </DocBtn>
+              </div>
+              {!sub.hasQuestionPaper && !sub.hasAnswerKey && (
+                <p className="text-xs text-gray-400 mt-2">No question paper / answer key attached to this test.</p>
+              )}
+            </div>
+
+            {/* Student's uploaded answer sheet(s) */}
+            <div>
+              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Student's Answer Sheet</p>
+              {(sub.answerFiles || []).length === 0 ? (
+                <p className="text-xs text-gray-400">No files uploaded.</p>
+              ) : (
+                <div className="space-y-2">
+                  {sub.answerFiles.map(f => (
+                    <div key={f.key} className="flex items-center justify-between gap-2 bg-gray-50 rounded-lg px-3 py-2">
+                      <span className="text-sm text-gray-700 truncate" title={f.name}>{f.name}</span>
+                      <div className="flex gap-2 flex-shrink-0">
+                        <DocBtn onClick={() => openInTab(`${base}/file?key=${encodeURIComponent(f.key)}&inline=1`, setError)}>View</DocBtn>
+                        <DocBtn color="amber" onClick={() => openInTab(`${base}/file?key=${encodeURIComponent(f.key)}`, setError)}>Download</DocBtn>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Evaluation */}
+            {sub.status === 'completed' ? (
+              <div className="border-t border-gray-100 pt-4">
+                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Evaluation</p>
+                <InfoRow label="Mentor">{sub.mentor?.name || '—'}{sub.mentor?.phoneNumber ? ` · ${sub.mentor.phoneNumber}` : ''}</InfoRow>
+                <InfoRow label="Marks awarded">
+                  <span className="font-semibold text-emerald-700">{sub.awardedMarks ?? '—'}/{sub.totalMarks}</span>
+                </InfoRow>
+                <InfoRow label="Evaluated at">{fmtDate(sub.evaluatedAt)}</InfoRow>
+                {sub.mentorNotes && (
+                  <div className="mt-2">
+                    <p className="text-xs text-gray-400 mb-1">Mentor notes</p>
+                    <p className="text-sm text-gray-700 bg-gray-50 rounded-lg px-3 py-2 whitespace-pre-wrap">{sub.mentorNotes}</p>
+                  </div>
+                )}
+
+                {/* Corrected / evaluated sheet(s) */}
+                <div className="mt-3">
+                  <p className="text-xs text-gray-400 mb-1.5">Evaluated Sheet</p>
+                  {(sub.evaluatedFiles || []).length === 0 ? (
+                    <p className="text-xs text-gray-400">No corrected sheet uploaded.</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {sub.evaluatedFiles.map(f => (
+                        <div key={f.key} className="flex items-center justify-between gap-2 bg-gray-50 rounded-lg px-3 py-2">
+                          <span className="text-sm text-gray-700 truncate" title={f.name}>{f.name}</span>
+                          <div className="flex gap-2 flex-shrink-0">
+                            <DocBtn color="emerald" onClick={() => openInTab(`${base}/file?key=${encodeURIComponent(f.key)}&inline=1`, setError)}>View</DocBtn>
+                            <DocBtn color="amber" onClick={() => openInTab(`${base}/file?key=${encodeURIComponent(f.key)}`, setError)}>Download</DocBtn>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Drive / review link */}
+                {sub.reviewVideoUrl && (
+                  <div className="mt-3">
+                    <p className="text-xs text-gray-400 mb-1.5">Drive Link / Review Video</p>
+                    <a href={sub.reviewVideoUrl} target="_blank" rel="noreferrer"
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-rose-50 text-rose-700 hover:bg-rose-100">
+                      🔗 Open Link ↗
+                    </a>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="border-t border-gray-100 pt-4">
+                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Evaluation</p>
+                <p className="text-sm text-gray-500">
+                  Not evaluated yet{sub.mentor?.name ? ` — assigned to ${sub.mentor.name}` : ' — sitting in the mentor pool'}.
+                </p>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
   )
 }
 
