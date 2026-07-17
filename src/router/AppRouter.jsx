@@ -11,6 +11,7 @@ import PurchasesPage from '../pages/admin/PurchasesPage'
 import ContentPage from '../pages/admin/ContentPage'
 import SubjectsPage from '../pages/admin/SubjectsPage'
 import TestSeriesAdminPage from '../pages/admin/TestSeriesAdminPage'
+import AiQuestionBankPage from '../pages/admin/AiQuestionBankPage'
 
 function RootRedirect() {
   const { user, loading } = useAuth()
@@ -32,6 +33,7 @@ export default function AppRouter() {
         <Route path="content"   element={<ContentPage />} />
         <Route path="subjects"  element={<SubjectsPage />} />
         <Route path="test-series" element={<TestSeriesAdminPage />} />
+        <Route path="ai-question-bank" element={<AiQuestionBankPage />} />
       </Route>
 
       <Route path="*" element={<Navigate to="/" replace />} />

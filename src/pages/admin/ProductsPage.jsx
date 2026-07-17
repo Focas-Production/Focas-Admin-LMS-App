@@ -138,6 +138,77 @@ function ContentAccessPanel({ product, subjects }) {
   )
 }
 
+// ─── AI similar-question tier ───────────────────────────────────────────────────
+// Marks this product as granting Lite or Pro AI generation. A student's effective
+// tier is 'pro' if they own ANY pro product, else 'lite'. Monthly counts per tier
+// are configured in Settings → AI Question Generation.
+const AI_TIERS = [
+  { value: '',     label: 'None',  hint: 'No AI generation from this product' },
+  { value: 'lite', label: 'Lite',  hint: 'Lite monthly limit' },
+  { value: 'pro',  label: 'Pro',   hint: 'Pro monthly limit' },
+]
+
+function AiTierPanel({ product }) {
+  const [tier, setTier]     = useState(product.aiTier || '')
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved]   = useState(false)
+  const [error, setError]   = useState(null)
+
+  const dirty = (product.aiTier || '') !== tier
+
+  const handleSave = async () => {
+    setSaving(true); setError(null); setSaved(false)
+    try {
+      await apiFetch(`/api/admin/products/${product._id}/ai-tier`, {
+        method: 'PUT',
+        body: JSON.stringify({ aiTier: tier || null }),
+      })
+      product.aiTier = tier || null   // keep local copy in sync so `dirty` resets
+      setSaved(true)
+      setTimeout(() => setSaved(false), 2500)
+    } catch (err) {
+      setError(err.message || 'Save failed')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="mt-3 pt-3 border-t border-gray-100">
+      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">AI Question Generation</p>
+      <div className="flex flex-wrap gap-2 mb-2">
+        {AI_TIERS.map(t => (
+          <label key={t.value} title={t.hint}
+            className={`flex items-center gap-1.5 text-xs font-medium cursor-pointer px-2.5 py-1.5 rounded-lg border transition-colors ${
+              tier === t.value
+                ? t.value === 'pro'  ? 'bg-violet-50 border-violet-300 text-violet-700'
+                : t.value === 'lite' ? 'bg-sky-50 border-sky-300 text-sky-700'
+                : 'bg-gray-100 border-gray-300 text-gray-600'
+                : 'border-gray-200 text-gray-500 hover:border-gray-300'
+            }`}>
+            <input type="radio" name={`aiTier-${product._id}`} value={t.value} checked={tier === t.value}
+              onChange={() => { setTier(t.value); setSaved(false) }} className="sr-only" />
+            {t.label}
+          </label>
+        ))}
+      </div>
+      <p className="text-[11px] text-gray-400">
+        {tier === 'pro'  ? 'Buyers of this product get the Pro monthly generation limit.'
+        : tier === 'lite' ? 'Buyers of this product get the Lite monthly generation limit.'
+        : 'This product grants no AI similar-question generation.'}
+      </p>
+
+      {error && <p className="text-[11px] text-red-500 mt-1">{error}</p>}
+      {(dirty || saved) && (
+        <button onClick={handleSave} disabled={saving || !dirty}
+          className="mt-2 px-3 py-1.5 rounded-lg bg-gray-900 text-white text-xs font-semibold disabled:opacity-40">
+          {saving ? 'Saving…' : saved ? '✓ Saved' : 'Save AI tier'}
+        </button>
+      )}
+    </div>
+  )
+}
+
 // ─── Test-series access (independent of content access) ─────────────────────────
 function TestSeriesAccessPanel({ product, subjects }) {
   const ts = product.testSeriesAccess || {}
@@ -389,6 +460,8 @@ export default function ProductsPage() {
                     <div className="flex gap-1.5">
                       {p.isCourse   && <span className="text-xs px-2 py-0.5 bg-blue-50 text-blue-600 rounded-full">Course</span>}
                       {p.shipToHome && <span className="text-xs px-2 py-0.5 bg-orange-50 text-orange-600 rounded-full">Physical</span>}
+                      {p.aiTier === 'pro'  && <span className="text-xs px-2 py-0.5 bg-violet-50 text-violet-600 rounded-full">AI Pro</span>}
+                      {p.aiTier === 'lite' && <span className="text-xs px-2 py-0.5 bg-sky-50 text-sky-600 rounded-full">AI Lite</span>}
                     </div>
                   </div>
 
@@ -418,6 +491,7 @@ export default function ProductsPage() {
                       <ContentAccessPanel product={p} subjects={subjects} />
                       <LectureAccessPanel product={p} subjects={subjects} />
                       <TestSeriesAccessPanel product={p} subjects={subjects} />
+                      <AiTierPanel product={p} />
                     </>
                   )}
                 </div>
