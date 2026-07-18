@@ -4,15 +4,6 @@ import { apiFetch } from '../../api'
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-function getLast7Days() {
-  return Array.from({ length: 7 }, (_, i) => {
-    const d = new Date()
-    d.setDate(d.getDate() - (6 - i))
-    d.setHours(0, 0, 0, 0)
-    return d
-  })
-}
-
 function fmtINR(n) {
   if (n == null) return '—'
   if (n >= 100000) return `₹${(n / 100000).toFixed(1)}L`
@@ -24,6 +15,50 @@ function fmtDate(d) {
   return d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })
 }
 
+// ── Date-range filter helpers ──────────────────────────────────────────────────
+
+const toYMD = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
+const today = () => toYMD(new Date())
+const daysAgo = n => { const d = new Date(); d.setDate(d.getDate() - n); return toYMD(d) }
+const monthsAgo = n => { const d = new Date(); d.setMonth(d.getMonth() - n); return toYMD(d) }
+
+// Key a timeline row's { year, month, day } period for a given granularity.
+function periodKey(p = {}, groupBy) {
+  if (groupBy === 'year')  return `${p.year}`
+  if (groupBy === 'month') return `${p.year}-${String(p.month).padStart(2,'0')}`
+  return `${p.year}-${String(p.month).padStart(2,'0')}-${String(p.day).padStart(2,'0')}`
+}
+
+// Build a continuous, gap-filled series of { label, revenue } across [from, to].
+function buildBuckets(timeline, groupBy, from, to) {
+  const map = {}
+  for (const t of timeline || []) map[periodKey(t.period || t._id, groupBy)] = t.totalRevenue || 0
+
+  const start = new Date(from), end = new Date(to)
+  const out = []
+  const cursor = new Date(start)
+
+  if (groupBy === 'year') {
+    for (let y = start.getFullYear(); y <= end.getFullYear(); y++)
+      out.push({ label: `${y}`, revenue: map[`${y}`] || 0 })
+  } else if (groupBy === 'month') {
+    cursor.setDate(1)
+    while (cursor <= end) {
+      const key = `${cursor.getFullYear()}-${String(cursor.getMonth()+1).padStart(2,'0')}`
+      out.push({ label: cursor.toLocaleDateString('en-IN', { month: 'short', year: '2-digit' }), revenue: map[key] || 0 })
+      cursor.setMonth(cursor.getMonth() + 1)
+    }
+  } else {
+    cursor.setHours(0,0,0,0)
+    while (cursor <= end) {
+      const key = `${cursor.getFullYear()}-${String(cursor.getMonth()+1).padStart(2,'0')}-${String(cursor.getDate()).padStart(2,'0')}`
+      out.push({ label: fmtDate(cursor), revenue: map[key] || 0 })
+      cursor.setDate(cursor.getDate() + 1)
+    }
+  }
+  return out
+}
+
 // ── Mini Revenue Chart (SVG) ──────────────────────────────────────────────────
 
 function RevenueChart({ data }) {
@@ -31,13 +66,16 @@ function RevenueChart({ data }) {
   const chartW = W - PL - PR
   const chartH = H - PT - PB
   const maxVal = Math.max(...data.map(d => d.revenue), 1)
+  const denom = Math.max(data.length - 1, 1)   // avoid /0 when a single point
   const pts = data.map((d, i) => ({
-    x: PL + (i / (data.length - 1)) * chartW,
+    x: data.length === 1 ? PL + chartW / 2 : PL + (i / denom) * chartW,
     y: PT + chartH - (d.revenue / maxVal) * chartH,
     ...d,
   }))
   const polyline = pts.map(p => `${p.x},${p.y}`).join(' ')
   const area = `${pts[0].x},${PT + chartH} ${polyline} ${pts[pts.length - 1].x},${PT + chartH}`
+  // Thin x-axis labels so they never overlap (~max 8 visible).
+  const labelStep = Math.ceil(pts.length / 8)
 
   return (
     <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-auto">
@@ -54,14 +92,19 @@ function RevenueChart({ data }) {
       <polyline points={polyline} fill="none" stroke="#4f46e5" strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round" />
       {/* Dots */}
       {pts.map((p, i) => (
-        <circle key={i} cx={p.x} cy={p.y} r="3.5" fill="#4f46e5" stroke="white" strokeWidth="2" />
+        <circle key={i} cx={p.x} cy={p.y} r={pts.length > 20 ? 2 : 3.5} fill="#4f46e5" stroke="white" strokeWidth={pts.length > 20 ? 1 : 2} />
       ))}
-      {/* X labels */}
-      {pts.map((p, i) => (
-        <text key={i} x={p.x} y={H - 6} textAnchor="middle" fontSize="9" fill="#9ca3af">
-          {p.label}
-        </text>
-      ))}
+      {/* X labels (thinned to avoid overlap; show last only if it won't collide) */}
+      {pts.map((p, i) => {
+        const isLast = i === pts.length - 1
+        const showLast = isLast && (pts.length - 1) % labelStep > labelStep / 2
+        if (!(i % labelStep === 0 || showLast)) return null
+        return (
+          <text key={i} x={p.x} y={H - 6} textAnchor="middle" fontSize="9" fill="#9ca3af">
+            {p.label}
+          </text>
+        )
+      })}
       <defs>
         <linearGradient id="grad" x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%" stopColor="#4f46e5" />
@@ -98,48 +141,69 @@ const SOURCE_STYLE = {
 
 // ── Main Component ────────────────────────────────────────────────────────────
 
+const RANGE_PRESETS = [
+  { key: 'last7',    label: 'Last 7 days',  groupBy: 'day',   from: () => daysAgo(6) },
+  { key: 'last30',   label: 'Last 30 days', groupBy: 'day',   from: () => daysAgo(29) },
+  { key: 'thisMonth',label: 'This month',   groupBy: 'day',   from: () => toYMD(new Date(new Date().getFullYear(), new Date().getMonth(), 1)) },
+  { key: 'last6mo',  label: 'Last 6 months',groupBy: 'month', from: () => monthsAgo(5) },
+  { key: 'last12mo', label: 'Last 12 months',groupBy: 'month',from: () => monthsAgo(11) },
+]
+
 export default function AdminDashboard() {
   const navigate = useNavigate()
   const [summary,   setSummary]   = useState(null)
   const [chartData, setChartData] = useState([])
+  const [rangeRevenue, setRangeRevenue] = useState(0)
   const [users,     setUsers]     = useState(0)
   const [products,  setProducts]  = useState(0)
   const [recent,    setRecent]    = useState([])
   const [loading,   setLoading]   = useState(true)
+  const [chartLoading, setChartLoading] = useState(true)
+  const [filters,   setFilters]   = useState({ dateFrom: daysAgo(6), dateTo: today(), source: '', groupBy: 'day' })
 
+  const setFilter = (k, v) => setFilters(f => ({ ...f, [k]: v }))
+
+  // Top cards + recent orders — all-time, loaded once.
   useEffect(() => {
-    const days   = getLast7Days()
-    const dateFrom = days[0].toISOString().split('T')[0]
-    const dateTo   = days[6].toISOString().split('T')[0]
-
     Promise.all([
       apiFetch('/api/admin/sales/summary'),
-      apiFetch(`/api/admin/sales/timeline?groupBy=day&dateFrom=${dateFrom}&dateTo=${dateTo}`),
       apiFetch('/api/admin/users?limit=1'),
       apiFetch('/api/admin/products?limit=1'),
       apiFetch('/api/admin/purchases?limit=5'),
     ])
-      .then(([sumRes, timeRes, usrRes, prodRes, purchRes]) => {
+      .then(([sumRes, usrRes, prodRes, purchRes]) => {
         setSummary(sumRes)
         setUsers(usrRes.pagination?.total || 0)
         setProducts(prodRes.pagination?.total || 0)
         setRecent(purchRes.purchases || [])
-
-        // Map timeline to 7 fixed days
-        const timelineMap = {}
-        for (const t of timeRes.timeline || []) {
-          const key = `${t._id?.year}-${String(t._id?.month).padStart(2,'0')}-${String(t._id?.day).padStart(2,'0')}`
-          timelineMap[key] = t.totalRevenue || 0
-        }
-        const chart = days.map(d => {
-          const key = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
-          return { label: fmtDate(d), revenue: timelineMap[key] || 0 }
-        })
-        setChartData(chart)
       })
       .catch(() => {})
       .finally(() => setLoading(false))
   }, [])
+
+  // Revenue chart — refetches whenever the filters change.
+  useEffect(() => {
+    let alive = true
+    const qs = new URLSearchParams({ groupBy: filters.groupBy })
+    if (filters.dateFrom) qs.set('dateFrom', filters.dateFrom)
+    if (filters.dateTo)   qs.set('dateTo',   filters.dateTo)
+    if (filters.source)   qs.set('source',   filters.source)
+
+    const sumQs = new URLSearchParams(qs); sumQs.delete('groupBy')
+
+    Promise.all([
+      apiFetch(`/api/admin/sales/timeline?${qs}`),
+      apiFetch(`/api/admin/sales/summary?${sumQs}`),
+    ])
+      .then(([timeRes, sumRes]) => {
+        if (!alive) return
+        setChartData(buildBuckets(timeRes.timeline, filters.groupBy, filters.dateFrom, filters.dateTo))
+        setRangeRevenue(sumRes?.totalRevenue || 0)
+      })
+      .catch(() => {})
+      .finally(() => { if (alive) setChartLoading(false) })
+    return () => { alive = false }
+  }, [filters])
 
   return (
     <div className="p-6 space-y-6">
@@ -181,19 +245,79 @@ export default function AdminDashboard() {
 
       {/* Chart */}
       <div className="bg-white rounded-2xl p-5 shadow-sm">
-        <div className="flex items-center justify-between mb-4">
+        <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
           <div>
-            <h2 className="font-semibold text-gray-900">Revenue — Last 7 Days</h2>
-            <p className="text-xs text-gray-400 mt-0.5">Daily sales revenue</p>
-          </div>
-          {chartData.length > 0 && (
-            <p className="text-sm font-semibold text-indigo-600">
-              {fmtINR(chartData.reduce((s, d) => s + d.revenue, 0))}
+            <h2 className="font-semibold text-gray-900">Revenue</h2>
+            <p className="text-xs text-gray-400 mt-0.5">
+              {filters.dateFrom} → {filters.dateTo} · {filters.groupBy === 'day' ? 'Daily' : filters.groupBy === 'month' ? 'Monthly' : 'Yearly'}
             </p>
-          )}
+          </div>
+          <div className="text-right">
+            <p className="text-xs text-gray-400 uppercase tracking-wide">Total in range</p>
+            <p className="text-xl font-bold text-emerald-600">{fmtINR(rangeRevenue)}</p>
+          </div>
         </div>
-        {loading ? (
+
+        {/* Presets */}
+        <div className="flex flex-wrap gap-1.5 mb-3">
+          {RANGE_PRESETS.map(p => {
+            const active = filters.groupBy === p.groupBy && filters.dateFrom === p.from() && filters.dateTo === today()
+            return (
+              <button key={p.key}
+                onClick={() => setFilters(f => ({ ...f, groupBy: p.groupBy, dateFrom: p.from(), dateTo: today() }))}
+                className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-colors ${
+                  active ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                }`}>
+                {p.label}
+              </button>
+            )
+          })}
+        </div>
+
+        {/* Custom filters */}
+        <div className="flex flex-wrap items-end gap-3 mb-4 pb-4 border-b border-gray-100">
+          <div>
+            <label className="block text-[11px] font-medium text-gray-400 mb-1">From</label>
+            <input type="date" value={filters.dateFrom} max={filters.dateTo}
+              onChange={e => setFilter('dateFrom', e.target.value)}
+              className="text-sm rounded-lg border border-gray-200 px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+          </div>
+          <div>
+            <label className="block text-[11px] font-medium text-gray-400 mb-1">To</label>
+            <input type="date" value={filters.dateTo} min={filters.dateFrom} max={today()}
+              onChange={e => setFilter('dateTo', e.target.value)}
+              className="text-sm rounded-lg border border-gray-200 px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+          </div>
+          <div>
+            <label className="block text-[11px] font-medium text-gray-400 mb-1">Source</label>
+            <select value={filters.source} onChange={e => setFilter('source', e.target.value)}
+              className="text-sm rounded-lg border border-gray-200 px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+              <option value="">All Sources</option>
+              <option value="website">Website</option>
+              <option value="shopify">Shopify</option>
+              <option value="combo">Combo</option>
+              <option value="custom">Custom</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-[11px] font-medium text-gray-400 mb-1">Group by</label>
+            <div className="flex rounded-lg border border-gray-200 overflow-hidden text-xs">
+              {['day', 'month', 'year'].map(g => (
+                <button key={g} onClick={() => setFilter('groupBy', g)}
+                  className={`px-3 py-1.5 capitalize transition-colors ${
+                    filters.groupBy === g ? 'bg-indigo-600 text-white' : 'text-gray-600 hover:bg-gray-50'
+                  }`}>
+                  {g}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {chartLoading ? (
           <div className="h-28 bg-gray-50 rounded-xl animate-pulse" />
+        ) : chartData.length === 0 ? (
+          <p className="h-28 flex items-center justify-center text-sm text-gray-400">No sales in this range</p>
         ) : (
           <RevenueChart data={chartData} />
         )}
