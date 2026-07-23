@@ -415,12 +415,24 @@ export default function ProductsPage() {
   }, [search])
 
   // (Re)fetch products whenever the debounced query changes.
+  // Fetch ALL products including hidden ones (needed for managing access for all products)
   useEffect(() => {
     let alive = true
     const qs = new URLSearchParams({ limit: '10000' })
     if (query) qs.set('search', query)
+    // Fetch regular products
     apiFetch(`/api/admin/products?${qs}`)
-      .then(d => { if (alive) setProducts(d.products || []) })
+      .then(d => {
+        if (alive) {
+          // Also fetch hidden products
+          const hiddenQs = new URLSearchParams({ limit: '10000', filter: 'hidden' })
+          if (query) hiddenQs.set('search', query)
+          return apiFetch(`/api/admin/products?${hiddenQs}`).then(hd => {
+            const allProducts = [...(d.products || []), ...(hd.products || [])]
+            setProducts(allProducts)
+          })
+        }
+      })
       .catch(() => {})
       .finally(() => { if (alive) setLoading(false) })
     return () => { alive = false }
@@ -485,15 +497,22 @@ export default function ProductsPage() {
           : products.map(p => {
               const hasAccess = (p.contentAccess?.levels?.length || p.contentAccess?.subjectIds?.length)
               return (
-                <div key={p._id} className="bg-white rounded-2xl p-5 shadow-sm">
+                <div key={p._id} className={`rounded-2xl p-5 shadow-sm ${p.isHidden ? 'bg-gray-50 border-2 border-gray-300' : 'bg-white'}`}>
                   {/* Product header */}
                   <div className="flex items-start justify-between gap-2 mb-1">
-                    <h3 className="font-semibold text-gray-900 text-sm leading-snug">{p.name}</h3>
-                    {p.level && (
-                      <span className={`text-xs font-medium px-2 py-0.5 rounded-full flex-shrink-0 ${LEVEL_BADGE[p.level] || 'bg-gray-100 text-gray-600'}`}>
-                        {p.level}
-                      </span>
-                    )}
+                    <h3 className={`font-semibold text-sm leading-snug ${p.isHidden ? 'text-gray-600' : 'text-gray-900'}`}>{p.name}</h3>
+                    <div className="flex items-center gap-1.5 flex-shrink-0">
+                      {p.isHidden && (
+                        <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-gray-300 text-gray-700">
+                          Hidden
+                        </span>
+                      )}
+                      {p.level && (
+                        <span className={`text-xs font-medium px-2 py-0.5 rounded-full flex-shrink-0 ${LEVEL_BADGE[p.level] || 'bg-gray-100 text-gray-600'}`}>
+                          {p.level}
+                        </span>
+                      )}
+                    </div>
                   </div>
                   {p.category && (
                     <p className="text-xs text-gray-400 mb-3">
