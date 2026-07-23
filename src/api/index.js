@@ -8,11 +8,14 @@ export function authHeaders() {
   }
 }
 
+// isForm: sending FormData. The browser has to generate the multipart boundary itself,
+// so Content-Type must be left off entirely — setting it breaks the upload.
 export async function apiFetch(path, options = {}) {
-  const res = await fetch(`${BASE}${path}`, {
-    headers: authHeaders(),
-    ...options,
-  })
+  const { isForm, ...rest } = options
+  const headers = authHeaders()
+  if (isForm) delete headers['Content-Type']
+
+  const res = await fetch(`${BASE}${path}`, { headers, ...rest })
   const data = await res.json()
   if (!res.ok) throw new Error(data.error || 'Request failed')
   return data
