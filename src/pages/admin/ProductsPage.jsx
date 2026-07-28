@@ -210,6 +210,88 @@ function AiTierPanel({ product }) {
   )
 }
 
+// ─── Product community ──────────────────────────────────────────────────────────
+// Decides which WhatsApp order-confirmation template a buyer of this product gets.
+// Every product defaults to Lite. When an order mixes communities the strongest
+// one wins (Final › Pro › Workout › Tutor › Kit › Lite).
+const COMMUNITIES = [
+  { value: 'tutor',   label: 'Tutor',         template: 'tutor_session',         color: 'emerald' },
+  { value: 'pro',     label: 'Pro',           template: 'pro_kit_session',       color: 'violet'  },
+  { value: 'workout', label: 'Workout Batch', template: 'workout_batch_session', color: 'amber'   },
+  { value: 'final',   label: 'Final',         template: 'final_session',         color: 'rose'    },
+  { value: 'kit',     label: 'Kit',           template: 'lms_access',            color: 'teal'    },
+  { value: 'lite',    label: 'Lite (default)', template: 'lms_access',           color: 'sky'     },
+]
+
+const COMMUNITY_STYLES = {
+  emerald: 'bg-emerald-50 border-emerald-300 text-emerald-700',
+  violet:  'bg-violet-50 border-violet-300 text-violet-700',
+  amber:   'bg-amber-50 border-amber-300 text-amber-700',
+  rose:    'bg-rose-50 border-rose-300 text-rose-700',
+  teal:    'bg-teal-50 border-teal-300 text-teal-700',
+  sky:     'bg-sky-50 border-sky-300 text-sky-700',
+}
+
+function ProductCommunityPanel({ product }) {
+  const [community, setCommunity]           = useState(product.productCommunity || 'lite')
+  const [savedCommunity, setSavedCommunity] = useState(product.productCommunity || 'lite')
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved]   = useState(false)
+  const [error, setError]   = useState(null)
+
+  const dirty    = savedCommunity !== community
+  const selected = COMMUNITIES.find(c => c.value === community)
+
+  const handleSave = async () => {
+    setSaving(true); setError(null); setSaved(false)
+    try {
+      await apiFetch(`/api/admin/products/${product._id}/community`, {
+        method: 'PUT',
+        body: JSON.stringify({ productCommunity: community }),
+      })
+      setSavedCommunity(community)
+      setSaved(true)
+      setTimeout(() => setSaved(false), 2500)
+    } catch (err) {
+      setError(err.message || 'Save failed')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="mt-3 pt-3 border-t border-gray-100">
+      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Product Community</p>
+      <div className="flex flex-wrap gap-2 mb-2">
+        {COMMUNITIES.map(c => (
+          <label key={c.value} title={`Sends the "${c.template}" WhatsApp template`}
+            className={`flex items-center gap-1.5 text-xs font-medium cursor-pointer px-2.5 py-1.5 rounded-lg border transition-colors ${
+              community === c.value
+                ? COMMUNITY_STYLES[c.color]
+                : 'border-gray-200 text-gray-500 hover:border-gray-300'
+            }`}>
+            <input type="radio" name={`community-${product._id}`} value={c.value} checked={community === c.value}
+              onChange={() => { setCommunity(c.value); setSaved(false) }} className="sr-only" />
+            {c.label}
+          </label>
+        ))}
+      </div>
+      <p className="text-[11px] text-gray-400">
+        Buyers of this product receive the <span className="font-mono text-gray-500">{selected?.template}</span> WhatsApp
+        order confirmation.
+      </p>
+
+      {error && <p className="text-[11px] text-red-500 mt-1">{error}</p>}
+      {(dirty || saved) && (
+        <button onClick={handleSave} disabled={saving || !dirty}
+          className="mt-2 px-3 py-1.5 rounded-lg bg-gray-900 text-white text-xs font-semibold disabled:opacity-40">
+          {saving ? 'Saving…' : saved ? '✓ Saved' : 'Save community'}
+        </button>
+      )}
+    </div>
+  )
+}
+
 // ─── Test-series access (independent of content access) ─────────────────────────
 function TestSeriesAccessPanel({ product, subjects }) {
   const ts = product.testSeriesAccess || {}
@@ -533,6 +615,11 @@ export default function ProductsPage() {
                       {p.shipToHome && <span className="text-xs px-2 py-0.5 bg-orange-50 text-orange-600 rounded-full">Physical</span>}
                       {p.aiTier === 'pro'  && <span className="text-xs px-2 py-0.5 bg-violet-50 text-violet-600 rounded-full">AI Pro</span>}
                       {p.aiTier === 'lite' && <span className="text-xs px-2 py-0.5 bg-sky-50 text-sky-600 rounded-full">AI Lite</span>}
+                      {p.productCommunity && p.productCommunity !== 'lite' && (
+                        <span className="text-xs px-2 py-0.5 bg-gray-100 text-gray-600 rounded-full capitalize">
+                          {p.productCommunity}
+                        </span>
+                      )}
                     </div>
                   </div>
 
@@ -612,6 +699,7 @@ function AccessDrawer({ product, subjects, onClose }) {
               <LectureAccessPanel product={product} subjects={subjects} />
               <TestSeriesAccessPanel product={product} subjects={subjects} />
               <AiTierPanel product={product} />
+              <ProductCommunityPanel product={product} />
             </div>
           </>
         )}

@@ -12,6 +12,7 @@ import ContentPage from '../pages/admin/ContentPage'
 import SubjectsPage from '../pages/admin/SubjectsPage'
 import TestSeriesAdminPage from '../pages/admin/TestSeriesAdminPage'
 import AiQuestionBankPage from '../pages/admin/AiQuestionBankPage'
+import LiveClassesPage from '../pages/admin/LiveClassesPage'
 
 function RootRedirect() {
   const { user, loading } = useAuth()
@@ -33,6 +34,7 @@ export default function AppRouter() {
         <Route path="content"   element={<ContentPage />} />
         <Route path="subjects"  element={<SubjectsPage />} />
         <Route path="test-series" element={<TestSeriesAdminPage />} />
+        <Route path="live-classes" element={<LiveClassesPage />} />
         <Route path="ai-question-bank" element={<AiQuestionBankPage />} />
       </Route>
 
