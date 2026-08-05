@@ -468,6 +468,179 @@ function AiLimitModal({ user, onClose, onUpdated }) {
   )
 }
 
+const CA_LEVELS = ['Foundation', 'Intermediate', 'Final']
+const CA_GROUPS = [
+  { value: 'group1', label: 'Group 1' },
+  { value: 'group2', label: 'Group 2' },
+  { value: 'both',   label: 'Both groups' },
+]
+export const groupLabel = (g) => CA_GROUPS.find(x => x.value === g)?.label || ''
+
+// What a student is enrolled for — this is what scopes their Chapter Progress
+// list. Two mutually exclusive ways to say it, because most students buy a whole
+// group but some buy individual papers:
+//   • Whole group      → every paper in Group 1 / Group 2 / both
+//   • Specific subjects → exactly the papers picked, ignoring groups
+// Keeping them exclusive means there's never a question of which one applies.
+function CourseModal({ user, onClose, onUpdated }) {
+  const [level,   setLevel]   = useState(user.caLevel || '')
+  const [group,   setGroup]   = useState(user.caGroup || '')
+  const [picked,  setPicked]  = useState(() => new Set((user.caSubjects || []).map(String)))
+  const [mode,    setMode]    = useState((user.caSubjects || []).length ? 'subjects' : 'group')
+  const [subjects, setSubjects] = useState(null)   // null = loading
+  const [saving,  setSaving]  = useState(false)
+  const [error,   setError]   = useState('')
+
+  useEffect(() => {
+    apiFetch('/api/admin/subjects')
+      .then(d => setSubjects(d.subjects || []))
+      .catch(() => setSubjects([]))
+  }, [])
+
+  const hasGroups = level === 'Intermediate' || level === 'Final'
+  const bySubjects = mode === 'subjects'
+  // Papers are picked within the chosen level; with no level yet, offer them all
+  // rather than an empty box the admin can't act on.
+  const options = (subjects || []).filter(s => !level || s.level === level)
+
+  const togglePick = (id) => setPicked(prev => {
+    const next = new Set(prev)
+    if (next.has(id)) next.delete(id); else next.add(id)
+    return next
+  })
+
+  async function handleSave() {
+    setSaving(true); setError('')
+    try {
+      await apiFetch(`/api/admin/users/${user._id}/course`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          caLevel: level || null,
+          caGroup: bySubjects || !hasGroups ? null : (group || null),
+          caSubjects: bySubjects ? [...picked] : [],
+        }),
+      })
+      onUpdated?.()
+      onClose()
+    } catch (e) {
+      setError(e.message)
+      setSaving(false)
+    }
+  }
+
+  const Choice = ({ active, onClick, children }) => (
+    <button onClick={onClick}
+      className={`px-3 py-2 text-sm rounded-xl border transition-colors ${
+        active ? 'border-indigo-500 bg-indigo-50 text-indigo-700 font-semibold' : 'border-gray-200 text-gray-600 hover:bg-gray-50'}`}>
+      {children}
+    </button>
+  )
+
+  const summary = () => {
+    if (!level && !bySubjects) return 'With no level set, Chapter Progress lists only the chapters this student has actually attended a class for.'
+    if (bySubjects) {
+      return picked.size
+        ? `Chapter Progress will list only these ${picked.size} paper${picked.size !== 1 ? 's' : ''} — groups are ignored.`
+        : 'Pick at least one paper, or switch to Whole group.'
+    }
+    if (hasGroups && !group) return `Chapter Progress will list every ${level} chapter. Pick a group to narrow it to that group's papers.`
+    if (group === 'both') return `Chapter Progress will list every ${level} paper — both groups.`
+    if (hasGroups) return `Chapter Progress will list ${level} ${groupLabel(group)} papers only.`
+    return `Chapter Progress will list every ${level} chapter — this level has no groups.`
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40" onClick={onClose}>
+      <div className="bg-white rounded-2xl w-full max-w-md max-h-[85vh] shadow-2xl overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
+        <div className="px-5 py-4 border-b flex items-center justify-between flex-shrink-0">
+          <div>
+            <h2 className="font-bold text-gray-900">Enrollment</h2>
+            <p className="text-xs text-gray-400 mt-0.5">{user.name || user.phoneNumber}</p>
+          </div>
+          <button onClick={onClose} className="w-7 h-7 rounded-full flex items-center justify-center hover:bg-gray-100">
+            <svg className="w-4 h-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        <div className="px-5 py-4 space-y-4 overflow-y-auto">
+          <div>
+            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Level</p>
+            <div className="flex flex-wrap gap-2">
+              {CA_LEVELS.map(l => (
+                <Choice key={l} active={level === l} onClick={() => setLevel(level === l ? '' : l)}>{l}</Choice>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Enrolled for</p>
+            <div className="flex gap-2">
+              <Choice active={!bySubjects} onClick={() => setMode('group')}>Whole group</Choice>
+              <Choice active={bySubjects} onClick={() => setMode('subjects')}>Specific subjects</Choice>
+            </div>
+          </div>
+
+          {!bySubjects && hasGroups && (
+            <div>
+              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Group</p>
+              <div className="flex flex-wrap gap-2">
+                {CA_GROUPS.map(g => (
+                  <Choice key={g.value} active={group === g.value} onClick={() => setGroup(group === g.value ? '' : g.value)}>{g.label}</Choice>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {bySubjects && (
+            <div>
+              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
+                Subjects {picked.size > 0 && <span className="text-indigo-600 normal-case">· {picked.size} selected</span>}
+              </p>
+              {subjects === null ? (
+                <div className="space-y-1.5">{[1, 2, 3].map(i => <div key={i} className="h-9 bg-gray-100 rounded-lg animate-pulse" />)}</div>
+              ) : !options.length ? (
+                <p className="text-sm text-gray-400">No subjects{level ? ` in ${level}` : ''} yet.</p>
+              ) : (
+                <div className="space-y-1.5 max-h-60 overflow-y-auto">
+                  {options.map(s => {
+                    const on = picked.has(String(s._id))
+                    return (
+                      <button key={s._id} onClick={() => togglePick(String(s._id))}
+                        className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg border text-left transition-colors ${
+                          on ? 'border-indigo-300 bg-indigo-50' : 'border-gray-200 hover:bg-gray-50'}`}>
+                        <span className={`w-4 h-4 rounded flex items-center justify-center text-[10px] font-bold flex-shrink-0 ${
+                          on ? 'bg-indigo-600 text-white' : 'border border-gray-300 text-transparent'}`}>✓</span>
+                        <span className={`text-sm flex-1 truncate ${on ? 'text-indigo-800 font-medium' : 'text-gray-700'}`}>{s.name}</span>
+                        <span className="text-[10px] text-gray-400 flex-shrink-0">
+                          {s.level}{s.group ? ` · ${s.group === 'group1' ? 'G1' : 'G2'}` : ''}
+                        </span>
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
+          <p className="text-xs text-gray-400 leading-relaxed">{summary()}</p>
+
+          {error && <p className="text-sm text-red-600">{error}</p>}
+        </div>
+
+        <div className="px-5 py-3 border-t flex justify-end gap-2 flex-shrink-0">
+          <button onClick={onClose} className="px-4 py-2 text-sm text-gray-600 border border-gray-200 rounded-xl hover:bg-gray-50">Cancel</button>
+          <button onClick={handleSave} disabled={saving || (bySubjects && picked.size === 0)}
+            className="px-4 py-2 text-sm font-semibold text-white bg-indigo-600 rounded-xl hover:bg-indigo-700 disabled:opacity-60">
+            {saving ? 'Saving…' : 'Save'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function TestLimitModal({ user, onClose, onUpdated }) {
   const [value,   setValue]   = useState('')        // '' ⇒ use default
   const [dflt,    setDflt]    = useState(1)
@@ -778,6 +951,15 @@ function UserDetailDrawer({ user, onClose }) {
             <Row label="Phone">{user.phoneNumber || '—'}</Row>
             <Row label="Email">{user.email || '—'}</Row>
             <Row label="Role">{role}</Row>
+            {!user.isAdmin && !user.isMentor && (
+              <Row label="Enrolled for">
+                {user.caSubjects?.length > 0
+                  ? `${user.caLevel ? `${user.caLevel} · ` : ''}${user.caSubjects.length} specific subject${user.caSubjects.length !== 1 ? 's' : ''}`
+                  : user.caLevel
+                    ? `${user.caLevel}${user.caGroup ? ` · ${groupLabel(user.caGroup)}` : ''}`
+                    : <span className="text-gray-400">Not set</span>}
+              </Row>
+            )}
             <Row label="Source"><span className="capitalize">{user.source || '—'}</span></Row>
             <Row label="Joined">{fmtDate(user.createdAt)}</Row>
             <Row label="Last Login">{user.activeSession?.lastLoginTime ? fmtDate(user.activeSession.lastLoginTime) : '—'}</Row>
@@ -823,6 +1005,396 @@ function UserDetailDrawer({ user, onClose }) {
   )
 }
 
+// What a mentor has taught and marked done, scoped to just their own subjects
+// (classes they've hosted) — the same syllabus-progress data mentors see in
+// their own portal, viewed read-only from the admin side.
+const CHIP_TONES = {
+  amber:   'bg-amber-100 text-amber-700',
+  emerald: 'bg-emerald-100 text-emerald-700',
+  gray:    'bg-gray-200 text-gray-700',
+}
+
+function FilterChip({ active, onClick, tone, children }) {
+  return (
+    <button onClick={onClick}
+      className={`text-xs font-semibold px-3 py-1.5 rounded-lg transition-colors ${
+        active ? CHIP_TONES[tone] : 'text-gray-400 hover:bg-gray-100'}`}>
+      {children}
+    </button>
+  )
+}
+
+function MentorSyllabusModal({ mentor, onClose }) {
+  const [subjects, setSubjects] = useState(null)   // null = loading
+  const [filter, setFilter] = useState('pending')  // pending | done | all
+  const [query, setQuery] = useState('')
+  const [openIds, setOpenIds] = useState(() => new Set())
+  const [touched, setTouched] = useState(false)
+
+  useEffect(() => {
+    apiFetch(`/api/live-classes/manage/syllabus?mentorId=${mentor._id}`)
+      .then(d => setSubjects(d.subjects || []))
+      .catch(() => setSubjects([]))
+  }, [mentor._id])
+
+  const allChapters = (subjects || []).flatMap(s => s.chapters || [])
+  const doneCount = allChapters.filter(c => c.completed).length
+  const pendingCount = allChapters.length - doneCount
+
+  const q = query.trim().toLowerCase()
+  const visible = (subjects || [])
+    .map(s => ({
+      ...s,
+      done: (s.chapters || []).filter(c => c.completed).length,
+      total: (s.chapters || []).length,
+      chapters: (s.chapters || []).filter(c =>
+        (filter === 'all' || (filter === 'done' ? c.completed : !c.completed)) &&
+        (!q || `${c.name} ${(c.units || []).map(u => u.name).join(' ')}`.toLowerCase().includes(q))),
+    }))
+    .filter(s => s.chapters.length)
+
+  // Same rule as the student view: short lists stay flat, long ones collapse.
+  const visibleCount = visible.reduce((n, s) => n + s.chapters.length, 0)
+  const autoOpen = !!q || (!touched && visibleCount <= 15)
+  const isOpen = (id) => autoOpen || openIds.has(id)
+  const toggleOpen = (id) => {
+    setOpenIds(prev => {
+      const next = new Set(autoOpen ? visible.map(s => s._id) : prev)
+      if (next.has(id)) next.delete(id); else next.add(id)
+      return next
+    })
+    setTouched(true)
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40" onClick={onClose}>
+      <div className="bg-white rounded-2xl w-full max-w-2xl max-h-[85vh] shadow-2xl overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
+        <div className="px-5 py-4 border-b flex items-center justify-between flex-shrink-0">
+          <div>
+            <h2 className="font-bold text-gray-900">Syllabus Progress</h2>
+            <p className="text-xs text-gray-400 mt-0.5">
+              {mentor.name || mentor.phoneNumber}
+              {subjects && allChapters.length > 0 && <span> · {doneCount}/{allChapters.length} chapters completed</span>}
+            </p>
+          </div>
+          <button onClick={onClose} className="w-7 h-7 rounded-full flex items-center justify-center hover:bg-gray-100">
+            <svg className="w-4 h-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        {subjects && allChapters.length > 0 && (
+          <div className="px-5 pt-3 flex items-center gap-2 flex-shrink-0 flex-wrap">
+            <div className="flex gap-1.5">
+              <FilterChip active={filter === 'pending'} onClick={() => setFilter('pending')} tone="amber">Not completed {pendingCount}</FilterChip>
+              <FilterChip active={filter === 'done'} onClick={() => setFilter('done')} tone="emerald">Completed {doneCount}</FilterChip>
+              <FilterChip active={filter === 'all'} onClick={() => setFilter('all')} tone="gray">All {allChapters.length}</FilterChip>
+            </div>
+            <input value={query} onChange={e => setQuery(e.target.value)}
+              placeholder="Search chapter or unit…"
+              className="ml-auto text-xs px-3 py-1.5 border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-400 w-48" />
+          </div>
+        )}
+
+        <div className="px-5 py-4 overflow-y-auto">
+          {subjects === null ? (
+            <div className="space-y-3">{[1, 2, 3].map(i => <div key={i} className="h-12 bg-gray-100 rounded-xl animate-pulse" />)}</div>
+          ) : !subjects.length ? (
+            <div className="text-center py-12 text-gray-400">
+              <p className="text-sm font-medium">No subjects yet</p>
+              <p className="text-xs mt-1">This mentor hasn't hosted a class tied to a chapter yet.</p>
+            </div>
+          ) : !visible.length ? (
+            <div className="text-center py-12 text-gray-400">
+              <p className="text-sm font-medium">
+                {q ? 'No match' : filter === 'pending' ? 'Nothing pending' : 'Nothing completed yet'}
+              </p>
+              <p className="text-xs mt-1">
+                {q ? `Nothing here matches "${query.trim()}".`
+                  : filter === 'pending' ? 'This mentor has marked every chapter completed.'
+                  : 'This mentor hasn\'t marked any chapter completed yet.'}
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {visible.map(subj => {
+                const chapters = subj.chapters
+                const open = isOpen(subj._id)
+                const pct = subj.total ? Math.round((subj.done / subj.total) * 100) : 0
+                return (
+                  <div key={subj._id} className="border border-gray-100 rounded-xl overflow-hidden">
+                    <button onClick={() => toggleOpen(subj._id)}
+                      className="w-full flex items-center gap-3 px-3 py-2.5 text-left hover:bg-gray-50 transition-colors">
+                      <span className="text-gray-300 text-xs w-3 flex-shrink-0">{open ? '▾' : '▸'}</span>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-semibold text-gray-900 truncate">
+                          {subj.name} <span className="text-gray-300 font-normal">· {subj.level}</span>
+                        </p>
+                        <div className="flex items-center gap-2 mt-1">
+                          <div className="h-1.5 bg-gray-100 rounded-full flex-1 max-w-[160px] overflow-hidden">
+                            <div className="h-full bg-teal-400 rounded-full transition-all" style={{ width: `${pct}%` }} />
+                          </div>
+                          <span className="text-[11px] text-gray-400 flex-shrink-0">{subj.done}/{subj.total} done</span>
+                        </div>
+                      </div>
+                      {!open && (
+                        <span className="text-[11px] text-gray-400 flex-shrink-0">
+                          {chapters.length} {filter === 'pending' ? 'pending' : 'shown'}
+                        </span>
+                      )}
+                    </button>
+
+                    {open && (
+                    <div className="px-3 pb-3 space-y-1.5">
+                      {chapters.map(ch => (
+                        <div key={ch._id} className={`rounded-lg border p-2.5 ${ch.completed ? 'bg-teal-50/50 border-teal-100' : 'bg-gray-50 border-gray-100'}`}>
+                          <div className="flex items-center gap-2">
+                            <span className={`w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-bold flex-shrink-0 ${
+                              ch.completed ? 'bg-teal-500 text-white' : 'bg-white border border-gray-300 text-transparent'}`}>✓</span>
+                            <p className={`text-sm font-medium flex-1 truncate ${ch.completed ? 'text-teal-700' : 'text-gray-700'}`}>{ch.name}</p>
+                            {ch.completed && ch.completedBy?.name && <span className="text-[10px] text-gray-400 flex-shrink-0">by {ch.completedBy.name}</span>}
+                          </div>
+                          {(ch.units || []).length > 0 && (
+                            <div className="flex flex-wrap gap-1.5 mt-1.5 pl-6">
+                              {ch.units.map(u => (
+                                <span key={u._id} className={`text-[11px] px-2 py-0.5 rounded-md ${u.completed ? 'bg-teal-100 text-teal-800' : 'bg-gray-100 text-gray-500'}`}>
+                                  {u.completed ? '✓' : '○'} {u.name}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+
+        <div className="px-5 py-3 border-t flex justify-end flex-shrink-0">
+          <button onClick={onClose} className="px-4 py-2 text-sm text-gray-600 border border-gray-200 rounded-xl hover:bg-gray-50">Close</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// A student's live-class chapter completion, aggregated across every class that
+// taught each chapter/unit (a chapter often spans 2-3 sessions). Separate from
+// the "Progress" (video watch) modal — this is attendance-driven completion.
+// Rows arrive flat (one per unit); regroup them under their chapter so a 60-unit
+// subject reads as ~15 chapter blocks instead of one long undifferentiated list.
+function groupByChapter(items) {
+  const out = []
+  const idx = new Map()
+  for (const it of items) {
+    let i = idx.get(it.chapterId)
+    if (i === undefined) {
+      i = out.length
+      idx.set(it.chapterId, i)
+      out.push({ chapterId: it.chapterId, name: it.chapterName, rows: [] })
+    }
+    out[i].rows.push(it)
+  }
+  return out
+}
+
+function ChapterItemRow({ it, label }) {
+  return (
+    <div className="flex items-center gap-3 p-2.5 bg-gray-50 rounded-xl">
+      <div className="flex-1 min-w-0">
+        <p className="text-sm font-medium text-gray-900 truncate">{label}</p>
+        <p className="text-xs text-gray-400 mt-0.5">
+          {it.sessions
+            ? `${it.sessions} session${it.sessions !== 1 ? 's' : ''} · ${it.percent}% attended`
+            : 'No class held yet'}
+          {it.reason === 'teaching' && <span className="text-amber-600"> · mentor still teaching</span>}
+          {it.reason === 'attendance' && <span className="text-red-500"> · attendance short</span>}
+        </p>
+      </div>
+      <span
+        title={it.source === 'manual' ? `Edited by ${it.markedByName || 'mentor'}` : 'Auto-computed from attendance'}
+        className={`text-[10px] font-bold px-2.5 py-1 rounded-md uppercase flex-shrink-0 ${
+          it.completed ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-500'}`}>
+        {it.completed ? '✓ Done' : 'Not done'}
+        {it.source === 'manual' && <span className="ml-0.5 opacity-60">✎</span>}
+      </span>
+    </div>
+  )
+}
+
+function ChapterProgressModal({ student, onClose }) {
+  const [data, setData] = useState(null)   // null = loading
+  const [filter, setFilter] = useState('pending')   // pending | done | all
+  const [query, setQuery] = useState('')
+  const [openIds, setOpenIds] = useState(() => new Set())
+  const [touched, setTouched] = useState(false)
+
+  useEffect(() => {
+    apiFetch(`/api/live-classes/manage/students/${student._id}/chapter-progress`)
+      .then(d => setData(d))
+      .catch(() => setData({ subjects: [], thresholdPercent: null }))
+  }, [student._id])
+
+  const subjects = data?.subjects || []
+  const allItems = subjects.flatMap(s => s.items)
+  const doneCount = allItems.filter(i => i.completed).length
+  const pendingCount = allItems.length - doneCount
+
+  const q = query.trim().toLowerCase()
+  const visible = subjects
+    .map(s => ({
+      ...s,
+      done: s.items.filter(i => i.completed).length,
+      total: s.items.length,
+      items: s.items.filter(i =>
+        (filter === 'all' || (filter === 'done' ? i.completed : !i.completed)) &&
+        (!q || `${i.chapterName} ${i.unitName}`.toLowerCase().includes(q))),
+    }))
+    .filter(s => s.items.length)
+
+  // A short list behaves like a plain list — nothing to click. Only once it grows
+  // past a screenful do subjects start collapsed, so a full CA level doesn't dump
+  // hundreds of rows into one scroll. Searching always opens what matched.
+  const visibleCount = visible.reduce((n, s) => n + s.items.length, 0)
+  const autoOpen = !!q || (!touched && visibleCount <= 15)
+  const isOpen = (id) => autoOpen || openIds.has(id)
+  const toggleOpen = (id) => {
+    setOpenIds(prev => {
+      // Coming out of auto-open, seed with everything currently showing so the
+      // first click collapses just the one subject rather than all of them.
+      const next = new Set(autoOpen ? visible.map(s => s.subjectId) : prev)
+      if (next.has(id)) next.delete(id); else next.add(id)
+      return next
+    })
+    setTouched(true)
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40" onClick={onClose}>
+      <div className="bg-white rounded-2xl w-full max-w-2xl max-h-[85vh] shadow-2xl overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
+        <div className="px-5 py-4 border-b flex items-center justify-between flex-shrink-0">
+          <div>
+            <h2 className="font-bold text-gray-900">Chapter Progress</h2>
+            <p className="text-xs text-gray-400 mt-0.5">
+              {student.name || student.phoneNumber}
+              {data?.student && (data.student.caLevel || data.student.subjectCount > 0) && (
+                <span className="text-indigo-500">
+                  {' · '}{data.student.caLevel}
+                  {data.student.subjectCount > 0
+                    ? `${data.student.caLevel ? ' · ' : ''}${data.student.subjectCount} subject${data.student.subjectCount !== 1 ? 's' : ''}`
+                    : data.student.caGroup ? ` ${groupLabel(data.student.caGroup)}` : ''}
+                </span>
+              )}
+              {data && <span> · {doneCount}/{allItems.length} completed{data.thresholdPercent != null && ` (≥${data.thresholdPercent}% attendance)`}</span>}
+            </p>
+          </div>
+          <button onClick={onClose} className="w-7 h-7 rounded-full flex items-center justify-center hover:bg-gray-100">
+            <svg className="w-4 h-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        {data && allItems.length > 0 && (
+          <div className="px-5 pt-3 flex items-center gap-2 flex-shrink-0 flex-wrap">
+            <div className="flex gap-1.5">
+              <FilterChip active={filter === 'pending'} onClick={() => setFilter('pending')} tone="amber">Not completed {pendingCount}</FilterChip>
+              <FilterChip active={filter === 'done'} onClick={() => setFilter('done')} tone="emerald">Completed {doneCount}</FilterChip>
+              <FilterChip active={filter === 'all'} onClick={() => setFilter('all')} tone="gray">All {allItems.length}</FilterChip>
+            </div>
+            <input value={query} onChange={e => setQuery(e.target.value)}
+              placeholder="Search chapter or unit…"
+              className="ml-auto text-xs px-3 py-1.5 border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-400 w-48" />
+          </div>
+        )}
+
+        <div className="px-5 py-4 overflow-y-auto">
+          {data === null ? (
+            <div className="space-y-3">{[1, 2, 3].map(i => <div key={i} className="h-12 bg-gray-100 rounded-xl animate-pulse" />)}</div>
+          ) : !subjects.length ? (
+            <div className="text-center py-12 text-gray-400">
+              <p className="text-sm font-medium">No live classes yet</p>
+              <p className="text-xs mt-1">This student hasn't attended a class tied to a chapter yet.</p>
+            </div>
+          ) : !visible.length ? (
+            <div className="text-center py-12 text-gray-400">
+              <p className="text-sm font-medium">
+                {q ? 'No match' : filter === 'pending' ? 'Nothing pending' : 'Nothing completed yet'}
+              </p>
+              <p className="text-xs mt-1">
+                {q ? `Nothing here matches "${query.trim()}".`
+                  : filter === 'pending' ? 'Every chapter so far is completed for this student.'
+                  : 'No chapter has been completed for this student yet.'}
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {visible.map(subj => {
+                const open = isOpen(subj.subjectId)
+                const pct = subj.total ? Math.round((subj.done / subj.total) * 100) : 0
+                return (
+                  <div key={subj.subjectId} className="border border-gray-100 rounded-xl overflow-hidden">
+                    <button onClick={() => toggleOpen(subj.subjectId)}
+                      className="w-full flex items-center gap-3 px-3 py-2.5 text-left hover:bg-gray-50 transition-colors">
+                      <span className="text-gray-300 text-xs w-3 flex-shrink-0">{open ? '▾' : '▸'}</span>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-semibold text-gray-900 truncate">{subj.name}</p>
+                        <div className="flex items-center gap-2 mt-1">
+                          <div className="h-1.5 bg-gray-100 rounded-full flex-1 max-w-[160px] overflow-hidden">
+                            <div className="h-full bg-emerald-400 rounded-full transition-all" style={{ width: `${pct}%` }} />
+                          </div>
+                          <span className="text-[11px] text-gray-400 flex-shrink-0">{subj.done}/{subj.total} done</span>
+                        </div>
+                      </div>
+                      {!open && (
+                        <span className="text-[11px] text-gray-400 flex-shrink-0">
+                          {subj.items.length} {filter === 'pending' ? 'pending' : 'shown'}
+                        </span>
+                      )}
+                    </button>
+
+                    {open && (
+                      <div className="px-3 pb-3 space-y-3">
+                        {groupByChapter(subj.items).map(ch => {
+                          // A chapter with no units is one row that already carries
+                          // its own name — no point repeating it as a heading.
+                          const single = ch.rows.length === 1 && !ch.rows[0].unitName
+                          return (
+                            <div key={ch.chapterId}>
+                              {!single && (
+                                <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wide mb-1.5 pl-1">{ch.name}</p>
+                              )}
+                              <div className="space-y-1.5">
+                                {ch.rows.map(it => (
+                                  <ChapterItemRow key={`${it.chapterId}:${it.unitId || ''}`} it={it}
+                                    label={it.unitName || it.chapterName} />
+                                ))}
+                              </div>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+
+        <div className="px-5 py-3 border-t flex justify-end flex-shrink-0">
+          <button onClick={onClose} className="px-4 py-2 text-sm text-gray-600 border border-gray-200 rounded-xl hover:bg-gray-50">Close</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function UsersPage() {
   const [users,   setUsers]   = useState([])
   const [total,   setTotal]   = useState(0)
@@ -836,6 +1408,9 @@ export default function UsersPage() {
   const [aiLimitUser,  setAiLimitUser]  = useState(null)
   const [addingUser,   setAddingUser]   = useState(false)
   const [detailUser,   setDetailUser]   = useState(null)
+  const [syllabusMentor, setSyllabusMentor] = useState(null)
+  const [chapterStudent, setChapterStudent] = useState(null)
+  const [courseUser,     setCourseUser]     = useState(null)
 
   function load() {
     setLoading(true)
@@ -922,10 +1497,18 @@ export default function UsersPage() {
                   <td className="px-5 py-3.5 text-gray-600 max-w-[180px] truncate">{u.email || '—'}</td>
                   <td className="px-5 py-3.5">
                     <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
-                      u.isAdmin ? 'bg-red-100 text-red-600' : 'bg-gray-100 text-gray-600'
+                      u.isAdmin ? 'bg-red-100 text-red-600' : u.isMentor ? 'bg-purple-100 text-purple-600' : 'bg-gray-100 text-gray-600'
                     }`}>
-                      {u.isAdmin ? 'Admin' : 'Student'}
+                      {u.isAdmin ? 'Admin' : u.isMentor ? 'Mentor' : 'Student'}
                     </span>
+                    {!u.isAdmin && !u.isMentor && (u.caLevel || u.caSubjects?.length > 0) && (
+                      <span className="block text-[10px] text-gray-400 mt-1">
+                        {u.caLevel}
+                        {u.caSubjects?.length > 0
+                          ? `${u.caLevel ? ' · ' : ''}${u.caSubjects.length} subject${u.caSubjects.length !== 1 ? 's' : ''}`
+                          : u.caGroup ? ` · ${groupLabel(u.caGroup)}` : ''}
+                      </span>
+                    )}
                   </td>
                   <td className="px-5 py-3.5">
                     {u.activeSession ? (
@@ -949,8 +1532,30 @@ export default function UsersPage() {
                   </td>
                   <td className="px-5 py-3.5 text-gray-400 text-xs">{fmtDate(u.createdAt)}</td>
                   <td className="px-5 py-3.5" onClick={e => e.stopPropagation()}>
-                    {!u.isAdmin && (
+                    {u.isMentor ? (
+                      <button onClick={() => setSyllabusMentor(u)}
+                        className="flex items-center gap-1.5 text-xs font-semibold text-teal-600 bg-teal-50 px-3 py-1.5 rounded-lg hover:bg-teal-100 transition-colors whitespace-nowrap">
+                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4M7.835 4.697a3.42 3.42 0 001.946-.806 3.42 3.42 0 014.438 0 3.42 3.42 0 001.946.806 3.42 3.42 0 013.138 3.138 3.42 3.42 0 00.806 1.946 3.42 3.42 0 010 4.438 3.42 3.42 0 00-.806 1.946 3.42 3.42 0 01-3.138 3.138 3.42 3.42 0 00-1.946.806 3.42 3.42 0 01-4.438 0 3.42 3.42 0 00-1.946-.806 3.42 3.42 0 01-3.138-3.138 3.42 3.42 0 00-.806-1.946 3.42 3.42 0 010-4.438 3.42 3.42 0 00.806-1.946 3.42 3.42 0 013.138-3.138z" />
+                        </svg>
+                        Syllabus
+                      </button>
+                    ) : !u.isAdmin && (
                       <div className="flex items-center gap-2">
+                        <button onClick={() => setCourseUser(u)}
+                          className="flex items-center gap-1.5 text-xs font-semibold text-indigo-600 bg-indigo-50 px-3 py-1.5 rounded-lg hover:bg-indigo-100 transition-colors whitespace-nowrap">
+                          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+                          </svg>
+                          Course
+                        </button>
+                        <button onClick={() => setChapterStudent(u)}
+                          className="flex items-center gap-1.5 text-xs font-semibold text-teal-600 bg-teal-50 px-3 py-1.5 rounded-lg hover:bg-teal-100 transition-colors whitespace-nowrap">
+                          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                          </svg>
+                          Chapters
+                        </button>
                         <button onClick={() => setGrantUser(u)}
                           className="flex items-center gap-1.5 text-xs font-semibold text-indigo-600 bg-indigo-50 px-3 py-1.5 rounded-lg hover:bg-indigo-100 transition-colors whitespace-nowrap">
                           <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1058,6 +1663,28 @@ export default function UsersPage() {
         <UserDetailDrawer
           user={detailUser}
           onClose={() => setDetailUser(null)}
+        />
+      )}
+
+      {syllabusMentor && (
+        <MentorSyllabusModal
+          mentor={syllabusMentor}
+          onClose={() => setSyllabusMentor(null)}
+        />
+      )}
+
+      {chapterStudent && (
+        <ChapterProgressModal
+          student={chapterStudent}
+          onClose={() => setChapterStudent(null)}
+        />
+      )}
+
+      {courseUser && (
+        <CourseModal
+          user={courseUser}
+          onClose={() => setCourseUser(null)}
+          onUpdated={load}
         />
       )}
     </div>

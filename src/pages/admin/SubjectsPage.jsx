@@ -107,8 +107,207 @@ function SubjectModal({ subject, level, onClose, onSaved }) {
   )
 }
 
-function SubjectRow({ subject, onEdit, onDelete, onToggleActive }) {
+// Inline editor for a subject's chapters and units. Every action saves right
+// away (the whole tree is PUT back), so there's no separate save step to forget.
+function ChaptersEditor({ subject, onSaved }) {
+  const [newChapter, setNewChapter] = useState('')
+  const [unitDrafts, setUnitDrafts] = useState({})   // chapterId → text being typed
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+
+  const chapters = subject.chapters || []
+
+  const save = async (nextChapters) => {
+    setBusy(true); setError('')
+    try {
+      const d = await apiFetch(`/api/admin/subjects/${subject._id}/chapters`, {
+        method: 'PUT',
+        body: JSON.stringify({ chapters: nextChapters }),
+      })
+      onSaved(d.subject)
+    } catch (err) {
+      setError(err.message || 'Could not save')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const addChapter = () => {
+    if (!newChapter.trim()) return
+    save([...chapters, { name: newChapter.trim(), units: [] }])
+    setNewChapter('')
+  }
+
+  const removeChapter = (chId) => {
+    const ch = chapters.find(c => c._id === chId)
+    if (!window.confirm(`Delete chapter "${ch?.name}" and its units?`)) return
+    save(chapters.filter(c => c._id !== chId))
+  }
+
+  const addUnit = (chId) => {
+    const text = (unitDrafts[chId] || '').trim()
+    if (!text) return
+    save(chapters.map(c => c._id === chId ? { ...c, units: [...(c.units || []), { name: text }] } : c))
+    setUnitDrafts(d => ({ ...d, [chId]: '' }))
+  }
+
+  const removeUnit = (chId, unitId) => {
+    save(chapters.map(c => c._id === chId
+      ? { ...c, units: (c.units || []).filter(u => u._id !== unitId) }
+      : c))
+  }
+
+  // Completion toggles ride the shared syllabus-progress endpoint (mentors use
+  // the same one), so mentor and admin always see identical state.
+  const toggleProgress = async (chapterId, unitId, completed) => {
+    setBusy(true); setError('')
+    try {
+      const d = await apiFetch(`/api/live-classes/manage/syllabus/${subject._id}/progress`, {
+        method: 'POST',
+        body: JSON.stringify({ chapterId, unitId: unitId || undefined, completed }),
+      })
+      onSaved(d.subject)
+    } catch (err) {
+      setError(err.message || 'Could not update progress')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const doneCount = chapters.filter(c => c.completed).length
+
+  return (
+    <div className="mt-1 mb-2 ml-12 mr-2 rounded-xl border border-gray-100 bg-gray-50/60 p-3">
+      {error && <p className="text-xs text-red-500 mb-2">{error}</p>}
+
+      {!chapters.length ? (
+        <p className="text-xs text-gray-400 mb-2">No chapters yet — add the first one below.</p>
+      ) : (
+        <p className="text-[11px] text-gray-400 mb-2">
+          <span className="font-semibold text-teal-600">{doneCount}</span>/{chapters.length} chapters completed
+          — tick a circle to mark taught; mentors update this after their classes too.
+        </p>
+      )}
+
+      <div className="space-y-2">
+        {chapters.map((ch, i) => (
+          <div key={ch._id} className={`rounded-lg border p-2.5 ${ch.completed ? 'bg-teal-50/50 border-teal-100' : 'bg-white border-gray-100'}`}>
+            <div className="flex items-center gap-2 mb-1.5">
+              <button onClick={() => toggleProgress(ch._id, null, !ch.completed)} disabled={busy}
+                title={ch.completed ? `Completed${ch.completedBy?.name ? ` by ${ch.completedBy.name}` : ''} — click to unmark` : 'Mark whole chapter completed'}
+                className={`w-[18px] h-[18px] rounded-full border-2 text-[9px] font-bold flex items-center justify-center flex-shrink-0 ${
+                  ch.completed ? 'bg-teal-500 border-teal-500 text-white' : 'border-gray-300 text-transparent hover:border-teal-400'}`}>✓</button>
+              <span className="text-[10px] font-bold text-gray-400 w-4 text-center flex-shrink-0">{i + 1}</span>
+              <p className={`text-sm font-semibold flex-1 truncate ${ch.completed ? 'text-teal-700' : 'text-gray-800'}`}>{ch.name}</p>
+              {ch.completed && ch.completedBy?.name && (
+                <span className="text-[10px] text-gray-400 flex-shrink-0">by {ch.completedBy.name}</span>
+              )}
+              <button onClick={() => removeChapter(ch._id)} disabled={busy}
+                className="text-gray-300 hover:text-red-500 text-xs font-bold px-1">✕</button>
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5 pl-7">
+              {(ch.units || []).map(u => (
+                <span key={u._id}
+                  className={`inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-md ${
+                    u.completed ? 'bg-teal-100 text-teal-800' : 'bg-indigo-50 text-indigo-700'}`}>
+                  <button onClick={() => toggleProgress(ch._id, u._id, !u.completed)} disabled={busy}
+                    title={u.completed ? 'Completed — click to unmark' : 'Mark unit completed'}
+                    className="font-bold leading-none">
+                    {u.completed ? '✓' : '○'}
+                  </button>
+                  {u.name}
+                  <button onClick={() => removeUnit(ch._id, u._id)} disabled={busy}
+                    className={`font-bold leading-none ${u.completed ? 'text-teal-400 hover:text-teal-800' : 'text-indigo-300 hover:text-indigo-700'}`}>×</button>
+                </span>
+              ))}
+              <input
+                value={unitDrafts[ch._id] || ''}
+                onChange={e => setUnitDrafts(d => ({ ...d, [ch._id]: e.target.value }))}
+                onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addUnit(ch._id) } }}
+                placeholder="+ unit, press Enter"
+                className="text-[11px] px-2 py-1 border border-dashed border-gray-200 rounded-md outline-none focus:border-indigo-300 w-32 bg-transparent" />
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="flex gap-2 mt-2">
+        <input
+          value={newChapter}
+          onChange={e => setNewChapter(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addChapter() } }}
+          placeholder="New chapter name…"
+          className="flex-1 text-sm px-3 py-2 border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-400 bg-white" />
+        <button onClick={addChapter} disabled={busy || !newChapter.trim()}
+          className="px-3 py-2 rounded-lg bg-indigo-600 text-white text-xs font-semibold hover:bg-indigo-700 disabled:bg-gray-200">
+          {busy ? '…' : 'Add chapter'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// Which CA group a paper belongs to. Only Intermediate and Final are split into
+// groups, and every paper sits in exactly one of them — there is no paper both
+// groups study. A student's Chapter Progress list is scoped by this, so it
+// decides whose pending list the paper lands in. Unset (the state every existing
+// subject starts in) means "not assigned yet" and stays visible to everyone,
+// so nothing silently vanishes before an admin has gone through the list.
+function GroupPicker({ subject, onSaved }) {
+  const [busy, setBusy] = useState(false)
+  const current = subject.group || null
+
+  const set = async (group) => {
+    if (busy) return
+    // Clicking the active group clears it — the only way back to unassigned
+    // without giving a meaningless third button its own slot.
+    const next = current === group ? null : group
+    setBusy(true)
+    try {
+      const d = await apiFetch(`/api/admin/subjects/${subject._id}`, {
+        method: 'PUT',
+        body: JSON.stringify({ group: next }),
+      })
+      onSaved(d.subject)
+    } catch (err) {
+      alert(err.message || 'Could not change the group')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const options = [
+    { value: 'group1', label: 'G1' },
+    { value: 'group2', label: 'G2' },
+  ]
+
+  return (
+    <div className="flex items-center gap-1.5 flex-shrink-0">
+      {!current && (
+        <span className="text-[10px] font-semibold text-amber-600" title="Not assigned to a group yet — every student in this level still sees it">
+          no group
+        </span>
+      )}
+      <div className="flex items-center gap-0.5 bg-gray-100 rounded-lg p-0.5">
+        {options.map(o => {
+          const active = current === o.value
+          return (
+            <button key={o.value} onClick={() => set(o.value)} disabled={busy}
+              title={active ? 'Click again to clear the group' : `Only Group ${o.value === 'group1' ? '1' : '2'} students study this paper`}
+              className={`text-[10px] font-bold px-2 py-1 rounded-md transition-colors disabled:opacity-50 ${
+                active ? 'bg-white text-indigo-600 shadow-sm' : 'text-gray-400 hover:text-gray-600'}`}>
+              {o.label}
+            </button>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+function SubjectRow({ subject, onEdit, onDelete, onToggleActive, onSaved }) {
   const [deleting, setDeleting] = useState(false)
+  const [open, setOpen] = useState(false)
 
   async function handleDelete() {
     if (!window.confirm(`Delete "${subject.name}"? This cannot be undone.`)) return
@@ -121,22 +320,34 @@ function SubjectRow({ subject, onEdit, onDelete, onToggleActive }) {
     }
   }
 
+  const chapterCount = (subject.chapters || []).length
+
   return (
+    <div>
     <div className={`flex items-center gap-4 px-4 py-3 rounded-xl border ${subject.isActive ? 'border-gray-200 bg-white' : 'border-gray-100 bg-gray-50'} hover:shadow-sm transition-shadow`}>
       <div className="w-8 h-8 rounded-lg bg-gray-100 flex items-center justify-center text-xs font-bold text-gray-500 flex-shrink-0">
         {subject.order}
       </div>
 
-      <div className="flex-1 min-w-0">
+      {/* Name area toggles the chapter/unit editor */}
+      <button type="button" onClick={() => setOpen(o => !o)} className="flex-1 min-w-0 text-left">
         <p className={`text-sm font-semibold ${subject.isActive ? 'text-gray-900' : 'text-gray-400 line-through'}`}>
           {subject.name}
+          <span className={`ml-2 text-[10px] font-bold px-1.5 py-0.5 rounded-full ${chapterCount ? 'bg-indigo-50 text-indigo-600' : 'bg-gray-100 text-gray-400'}`}>
+            {chapterCount ? `${chapterCount} chapter${chapterCount > 1 ? 's' : ''}` : 'no chapters'}
+          </span>
+          <span className="ml-1.5 text-gray-300 text-xs">{open ? '▾' : '▸'}</span>
         </p>
         {subject.description && (
           <p className="text-xs text-gray-400 truncate mt-0.5">{subject.description}</p>
         )}
-      </div>
+      </button>
 
       <div className="flex items-center gap-2 flex-shrink-0">
+        {(subject.level === 'Intermediate' || subject.level === 'Final') && (
+          <GroupPicker subject={subject} onSaved={onSaved} />
+        )}
+
         <button
           onClick={() => onToggleActive(subject)}
           title={subject.isActive ? 'Deactivate' : 'Activate'}
@@ -166,6 +377,9 @@ function SubjectRow({ subject, onEdit, onDelete, onToggleActive }) {
           </svg>
         </button>
       </div>
+    </div>
+
+    {open && <ChaptersEditor subject={subject} onSaved={onSaved} />}
     </div>
   )
 }
@@ -293,6 +507,7 @@ export default function SubjectsPage() {
               onEdit={s => setModal({ mode: 'edit', subject: s })}
               onDelete={handleDelete}
               onToggleActive={handleToggleActive}
+              onSaved={s => setSubjects(prev => prev.map(x => x._id === s._id ? s : x))}
             />
           ))}
         </div>
