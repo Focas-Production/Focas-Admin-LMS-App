@@ -71,11 +71,17 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
   const [overCell, setOverCell] = useState(null)   // cell id under the drag
   const [staged, setStaged]     = useState({})     // cellId → { day, slot, col, ids: [] }
   const [review, setReview]     = useState(false)  // review-and-save modal open
+  const [clipboard, setClipboard] = useState(null) // { ids: [], from: label } — copied roster
   const [newMeta, setNewMeta]   = useState({})     // cellId → { title, hostUserId } for new classes
   const [saving, setSaving]     = useState(false)
   const [error, setError]       = useState('')
 
   const [subjects, setSubjects] = useState([])   // subject → chapters → units tree
+
+  // One room's tracks show at a time so the cells stay big; the admin switches
+  // rooms (or expands to all of them) with the segmented control above the grid.
+  // Holds a room key, or 'all' for the full x-axis.
+  const [roomView, setRoomView] = useState(null)   // null until rooms arrive → first room
 
   useEffect(() => {
     apiFetch('/api/admin/users?limit=2000')
@@ -108,6 +114,14 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
       trackKey: t.key, trackLabel: t.label,
       roomName: t.roomName,
     }))), [rooms])
+
+  // The columns actually rendered — a single room's tracks, or everything.
+  const activeRoom = roomView || (rooms || [])[0]?.key || 'all'
+  const visibleCols = useMemo(() => {
+    if (activeRoom === 'all') return trackCols
+    const cols = trackCols.filter(c => c.roomKey === activeRoom)
+    return cols.length ? cols : trackCols
+  }, [trackCols, activeRoom])
 
   const active = useMemo(
     () => (classes || []).filter(c => c.status === 'scheduled' || c.status === 'live'),
@@ -165,6 +179,39 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
     })
   }
 
+  // ── copy & paste a slot's roster ──
+  // Copy grabs everyone in a cell (saved class students + staged chips); paste
+  // stages them into another cell, skipping anyone already there. Nothing is
+  // booked until Review & save, same as a drag.
+
+  const copyCell = (day, slot, col) => {
+    const cellId = `${dayKey(day)}/${slot.key}/${col.roomName}`
+    const existing = cellClass(day, slot, col.roomName)
+    const ids = [...new Set([
+      ...(existing?.allowedStudents || []).map(String),
+      ...(staged[cellId]?.ids || []),
+    ])].filter(id => byId.get(id))
+    if (!ids.length) return
+    setClipboard({ ids, from: `${col.roomLabel} ${col.trackLabel} · ${slot.name}` })
+  }
+
+  const pasteCell = (day, slot, col) => {
+    if (!clipboard?.ids?.length) return
+    const cellId = `${dayKey(day)}/${slot.key}/${col.roomName}`
+    const existing = cellClass(day, slot, col.roomName)
+    const already = new Set((existing?.allowedStudents || []).map(String))
+    setStaged(prev => {
+      const cell = prev[cellId] || { day, slot, col, ids: [] }
+      const merged = [...cell.ids]
+      for (const id of clipboard.ids) {
+        if (already.has(id) || merged.includes(id)) continue
+        merged.push(id)
+      }
+      if (merged.length === cell.ids.length) return prev
+      return { ...prev, [cellId]: { ...cell, ids: merged } }
+    })
+  }
+
   const unstage = (cellId, id) => {
     setStaged(prev => {
       const cell = prev[cellId]
@@ -193,14 +240,42 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
 
   // ── review & save ──
 
+  // One mentor per room per slot: a room is a single physical space, so both of
+  // its tracks must be run by the same person at the same time. A cell's mentor
+  // is locked when the sibling track already has a saved class in this slot, or
+  // when an earlier staged cell in the same room/slot picked a mentor first.
+  const roomLockedHost = (cellId, cell) => {
+    const siblings = trackCols.filter(c =>
+      c.roomKey === cell.col.roomKey && c.roomName !== cell.col.roomName)
+    for (const sib of siblings) {
+      const cls = cellClass(cell.day, cell.slot, sib.roomName)
+      if (cls?.host?.userId) {
+        return { id: String(cls.host.userId), name: cls.host.name || 'assigned mentor', from: `${sib.trackLabel} · ${cls.title}` }
+      }
+    }
+    for (const [otherId, other] of Object.entries(staged)) {
+      if (otherId === cellId) break   // only cells listed before this one lock it
+      if (dayKey(other.day) !== dayKey(cell.day) || other.slot.key !== cell.slot.key) continue
+      if (other.col.roomKey !== cell.col.roomKey || other.col.roomName === cell.col.roomName) continue
+      if (cellClass(other.day, other.slot, other.col.roomName)) continue   // saved class → caught above
+      const h = newMeta[otherId]?.hostUserId
+      if (h) {
+        const host = (hosts || []).find(x => String(x.id) === String(h))
+        return { id: String(h), name: host?.name || 'same mentor', from: other.col.trackLabel }
+      }
+    }
+    return null
+  }
+
   const openReview = () => {
     // Prefill title + host for every cell that will become a NEW class.
     const meta = {}
     for (const [cellId, cell] of Object.entries(staged)) {
       if (!cellClass(cell.day, cell.slot, cell.col.roomName)) {
+        const locked = roomLockedHost(cellId, cell)
         meta[cellId] = newMeta[cellId] || {
           title: `${cell.col.roomLabel} · ${cell.col.trackLabel} — ${cell.slot.name}`,
-          hostUserId: hosts?.[0]?.id ? String(hosts[0].id) : '',
+          hostUserId: locked ? locked.id : (hosts?.[0]?.id ? String(hosts[0].id) : ''),
         }
       }
     }
@@ -222,7 +297,9 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
           })
         } else {
           const meta = newMeta[cellId] || {}
-          if (!meta.hostUserId) throw new Error('Pick a host')
+          const locked = roomLockedHost(cellId, cell)
+          const hostUserId = locked ? locked.id : meta.hostUserId
+          if (!hostUserId) throw new Error('Pick a host')
           if (!meta.subjectId || !meta.chapterId) throw new Error('Pick a subject and chapter')
           const start = new Date(day.getFullYear(), day.getMonth(), day.getDate(), slot.startHour)
           const end   = new Date(day.getFullYear(), day.getMonth(), day.getDate(), slot.endHour)
@@ -232,7 +309,7 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
               title: (meta.title || '').trim() || `${col.roomLabel} · ${col.trackLabel}`,
               roomKey: col.roomKey, trackKey: col.trackKey,
               scheduledStart: start.toISOString(), scheduledEnd: end.toISOString(),
-              hostUserId: meta.hostUserId, studentIds: ids,
+              hostUserId, studentIds: ids,
               subjectId: meta.subjectId, chapterId: meta.chapterId,
               unitId: meta.unitId || undefined,
             }),
@@ -338,6 +415,33 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
 
         {/* ── Right: all 7 days, open ── */}
         <div className="flex-1 min-w-0 space-y-3">
+          {(rooms || []).length > 1 && (
+            <div className="flex justify-end">
+              <div className="inline-flex bg-white border border-gray-200 rounded-xl p-0.5 shadow-sm">
+                {[...(rooms || []).map(r => ({ key: r.key, label: r.label })), { key: 'all', label: 'Both rooms' }].map(opt => {
+                  // Staged students waiting inside this room, so a hidden room
+                  // with pending drops is never forgotten.
+                  const stagedHere = opt.key === 'all' ? 0 : Object.values(staged)
+                    .filter(c => c.col.roomKey === opt.key)
+                    .reduce((n, c) => n + c.ids.length, 0)
+                  const on = activeRoom === opt.key
+                  return (
+                    <button key={opt.key} type="button" onClick={() => setRoomView(opt.key)}
+                      className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[10px] text-xs font-semibold transition-colors
+                        ${on ? 'bg-indigo-600 text-white' : 'text-gray-500 hover:text-indigo-600'}`}>
+                      {opt.label}
+                      {!on && stagedHere > 0 && (
+                        <span className="text-[9px] font-bold bg-amber-100 text-amber-700 px-1 py-0.5 rounded"
+                          title="Students staged in this room">
+                          {stagedHere}
+                        </span>
+                      )}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          )}
           {days.map(day => {
             const k = dayKey(day)
             const folded = !!collapsed[k]
@@ -355,11 +459,11 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
 
                 {!folded && (
                   <div className="border-t border-gray-100 px-3 pb-3 pt-1 overflow-x-auto">
-                    <table className="w-full border-separate table-fixed" style={{ borderSpacing: 6, minWidth: 760 }}>
+                    <table className="w-full border-separate table-fixed" style={{ borderSpacing: 6, minWidth: visibleCols.length > 2 ? 760 : 460 }}>
                       <thead>
                         <tr>
                           <th className="text-left text-[10px] font-bold text-gray-400 uppercase px-2 w-32">Slot</th>
-                          {trackCols.map(col => (
+                          {visibleCols.map(col => (
                             <th key={col.roomName} className="text-[10px] font-bold text-gray-500 uppercase px-2 pb-1">
                               {col.roomLabel} <span className="text-indigo-500">{col.trackLabel}</span>
                             </th>
@@ -375,7 +479,7 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
                                 {fmtHour(slot.startHour)} – {fmtHour(slot.endHour)}
                               </p>
                             </td>
-                            {trackCols.map(col => {
+                            {visibleCols.map(col => {
                               const cls = cellClass(day, slot, col.roomName)
                               const cellId = `${k}/${slot.key}/${col.roomName}`
                               const cellStaged = staged[cellId]?.ids || []
@@ -387,7 +491,7 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
                                   onDragOver={e => { if (past) return; e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; setOverCell(cellId) }}
                                   onDragLeave={() => setOverCell(o => (o === cellId ? null : o))}
                                   onDrop={e => { if (past) return; e.preventDefault(); stageDrop(day, slot, col, e.dataTransfer.getData('text/plain')) }}>
-                                  <div className={`rounded-xl border p-1.5 min-h-[52px] transition-colors
+                                  <div className={`relative rounded-xl border p-1.5 min-h-[52px] transition-colors
                                     ${hovered ? 'border-indigo-400 bg-indigo-50'
                                       : cellStaged.length ? 'border-amber-300 bg-amber-50/60'
                                       : cls ? 'border-gray-200 bg-gray-50'
@@ -397,6 +501,23 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
                                       <p className="text-[10px] text-gray-300 pt-3 text-center">slot over</p>
                                     ) : (
                                       <>
+                                        {/* copy the roster here / paste the copied one */}
+                                        <div className="absolute top-1 right-1 flex gap-0.5">
+                                          {((cls?.allowedStudents || []).length + cellStaged.length) > 0 && (
+                                            <button type="button" onClick={() => copyCell(day, slot, col)}
+                                              title="Copy this slot's students"
+                                              className="w-5 h-5 flex items-center justify-center rounded-md bg-white/90 border border-gray-200 text-gray-400 hover:text-indigo-600 hover:border-indigo-300 text-[11px] leading-none">
+                                              ⧉
+                                            </button>
+                                          )}
+                                          {clipboard && (
+                                            <button type="button" onClick={() => pasteCell(day, slot, col)}
+                                              title={`Paste ${clipboard.ids.length} student${clipboard.ids.length > 1 ? 's' : ''} here`}
+                                              className="w-5 h-5 flex items-center justify-center rounded-md bg-white/90 border border-amber-200 text-amber-500 hover:text-amber-700 hover:border-amber-400 text-[10px] leading-none">
+                                              📋
+                                            </button>
+                                          )}
+                                        </div>
                                         {cls && (
                                           <>
                                             <p className="text-[11px] font-semibold text-gray-800 truncate" title={cls.title}>
@@ -431,7 +552,14 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
                                             </span>
                                           ))}
                                           {!cls && !cellStaged.length && (
-                                            <span className="text-[10px] text-gray-300 w-full pt-2 text-center">drop student here</span>
+                                            clipboard ? (
+                                              <button type="button" onClick={() => pasteCell(day, slot, col)}
+                                                className="text-[10px] text-amber-500 hover:text-amber-700 font-semibold w-full pt-2 text-center">
+                                                📋 paste {clipboard.ids.length} student{clipboard.ids.length > 1 ? 's' : ''}
+                                              </button>
+                                            ) : (
+                                              <span className="text-[10px] text-gray-300 w-full pt-2 text-center">drop student here</span>
+                                            )
                                           )}
                                         </div>
                                       </>
@@ -451,6 +579,20 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
           })}
         </div>
       </div>
+
+      {/* ── Floating clipboard pill — visible while a roster is copied ── */}
+      {clipboard && (
+        <div className="fixed bottom-5 left-6 z-40 bg-white rounded-2xl shadow-xl border border-amber-200 px-4 py-3 flex items-center gap-3">
+          <span className="text-xs text-gray-700">
+            ⧉ <b>{clipboard.ids.length}</b> student{clipboard.ids.length > 1 ? 's' : ''} copied
+            <span className="text-gray-400"> from {clipboard.from}</span> — click 📋 on any slot to paste
+          </span>
+          <button onClick={() => setClipboard(null)}
+            className="px-2.5 py-1 rounded-lg border border-gray-200 text-gray-500 text-xs font-semibold hover:bg-gray-50">
+            ✕ Clear
+          </button>
+        </div>
+      )}
 
       {/* ── Floating action bar — appears once anything is staged ── */}
       {stagedCount > 0 && !review && (
@@ -502,6 +644,7 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
                       const subj = subjects.find(s => s._id === meta.subjectId)
                       const chap = (subj?.chapters || []).find(c => c._id === meta.chapterId)
                       const setMeta = (patch) => setNewMeta(m => ({ ...m, [cellId]: { ...m[cellId], ...patch } }))
+                      const locked = roomLockedHost(cellId, cell)
                       return (
                         <div className="space-y-2">
                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -509,13 +652,22 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
                               onChange={e => setMeta({ title: e.target.value })}
                               placeholder="Class title"
                               className="px-3 py-2 text-xs border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-400" />
-                            <select value={meta.hostUserId || ''}
+                            <select value={locked ? locked.id : (meta.hostUserId || '')}
+                              disabled={!!locked}
                               onChange={e => setMeta({ hostUserId: e.target.value })}
-                              className="px-3 py-2 text-xs border border-gray-200 rounded-lg bg-white outline-none focus:ring-2 focus:ring-indigo-400">
+                              className="px-3 py-2 text-xs border border-gray-200 rounded-lg bg-white outline-none focus:ring-2 focus:ring-indigo-400 disabled:bg-gray-50 disabled:text-gray-500">
                               <option value="">Select a host…</option>
                               {(hosts || []).map(h => <option key={h.id} value={h.id}>{h.name} ({h.role})</option>)}
+                              {locked && !(hosts || []).some(h => String(h.id) === locked.id) && (
+                                <option value={locked.id}>{locked.name}</option>
+                              )}
                             </select>
                           </div>
+                          {locked && (
+                            <p className="text-[10px] text-amber-600">
+                              🔒 {cell.col.roomLabel} already has <b>{locked.name}</b> in this slot ({locked.from}) — one room uses one mentor.
+                            </p>
+                          )}
                           {/* What this class teaches: subject → chapter, unit optional */}
                           <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                             <select value={meta.subjectId || ''}
