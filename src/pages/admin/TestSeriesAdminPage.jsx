@@ -49,20 +49,27 @@ const STATUS_STYLE = {
   completed: 'bg-emerald-100 text-emerald-700',
 }
 
+// Key used for the mentor filter: '' = every mentor, 'unassigned' = the shared pool.
+const mentorKey = (s) => (s.mentorId ? String(s.mentorId) : 'unassigned')
+
 function SubmissionsView({ showToast }) {
   const [status, setStatus] = useState('')
+  const [mentorFilter, setMentorFilter] = useState('')   // '' | mentorId | 'unassigned'
   const [rows, setRows] = useState(null)
   const [mentors, setMentors] = useState([])
+  const [stats, setStats] = useState(null)               // per-mentor workload
+  const [totals, setTotals] = useState(null)
   const [page, setPage] = useState(1)
   const [limit, setLimit] = useState(20)
   const [total, setTotal] = useState(0)
   const [totalPages, setTotalPages] = useState(1)
   const [detailId, setDetailId] = useState(null)   // submission opened in the detail modal
 
-  const load = (st = status, pg = page, lim = limit) => {
+  const load = (st = status, pg = page, lim = limit, mid = mentorFilter) => {
     setRows(null)
     const params = new URLSearchParams({ page: pg, limit: lim })
     if (st) params.set('status', st)
+    if (mid) params.set('mentorId', mid)
     apiFetch(`/api/admin/test-submissions?${params.toString()}`)
       .then(d => {
         setRows(d.submissions || [])
@@ -71,12 +78,21 @@ function SubmissionsView({ showToast }) {
       })
       .catch(() => { setRows([]); setTotal(0); setTotalPages(1) })
   }
-  useEffect(() => { load(status, page, limit) }, [status, page, limit])
-  useEffect(() => { apiFetch('/api/admin/mentors').then(d => setMentors(d.mentors || [])).catch(() => {}) }, [])
+  const loadStats = () => {
+    apiFetch('/api/admin/test-submissions/stats')
+      .then(d => { setStats(d.stats || []); setTotals(d.totals || null) })
+      .catch(() => { setStats([]); setTotals(null) })
+  }
+  useEffect(() => { load(status, page, limit, mentorFilter) }, [status, page, limit, mentorFilter])
+  useEffect(() => {
+    loadStats()
+    apiFetch('/api/admin/mentors').then(d => setMentors(d.mentors || [])).catch(() => {})
+  }, [])
 
-  // Reset to page 1 when the filter or page size changes
+  // Reset to page 1 when a filter or the page size changes
   const onStatus = (v) => { setStatus(v); setPage(1) }
   const onLimit  = (v) => { setLimit(v); setPage(1) }
+  const onMentor = (v) => { setMentorFilter(v); setPage(1) }
 
   const assign = async (id, mentorId) => {
     if (!mentorId) return
@@ -85,9 +101,12 @@ function SubmissionsView({ showToast }) {
         method: 'PUT', body: JSON.stringify({ mentorId }),
       })
       showToast('Assigned to mentor')
-      load(status, page, limit)
+      load(status, page, limit, mentorFilter)
+      loadStats()
     } catch (e) { showToast(e.message) }
   }
+
+  const selected = mentorFilter ? (stats || []).find(s => mentorKey(s) === mentorFilter) : null
 
   const rangeStart = total === 0 ? 0 : (page - 1) * limit + 1
   const rangeEnd   = Math.min(page * limit, total)
@@ -107,10 +126,18 @@ function SubmissionsView({ showToast }) {
       </div>
       <p className="text-xs text-gray-400 mb-4">Read-only overview. Assign a pending paper to a mentor manually, or let it sit in the pool for self-claim.</p>
 
+      {stats !== null && stats.length > 0 && (
+        <MentorFilter stats={stats} totals={totals} value={mentorFilter} onChange={onMentor}
+          status={status} onStatus={onStatus} />
+      )}
+
       {rows === null ? (
         <p className="text-sm text-gray-400">Loading…</p>
       ) : !rows.length ? (
-        <p className="text-sm text-gray-500">No submissions{status ? ` with status "${status}"` : ''} yet.</p>
+        <p className="text-sm text-gray-500">
+          No submissions{status ? ` with status "${status}"` : ''}
+          {selected ? ` for ${mentorLabel(selected)}` : ''} yet.
+        </p>
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
@@ -196,6 +223,132 @@ function SubmissionsView({ showToast }) {
 
       {detailId && <SubmissionDetailModal id={detailId} onClose={() => setDetailId(null)} />}
     </section>
+  )
+}
+
+// ───────────────────────── mentor filter ─────────────────────────
+// A mentor row can be a real mentor, or the shared pool (mentorId === null).
+const isPool       = (s) => !s.mentorId
+const mentorLabel  = (s) => (isPool(s) ? 'Unassigned' : (s.name || s.phoneNumber || 'Mentor'))
+const mentorSub    = (s) => (isPool(s) ? 'Shared pool' : (s.name ? s.phoneNumber : ''))
+const incompleteOf = (s) => s.pending + s.assigned
+
+// Two-letter avatar: initials when the mentor has a name, else the phone's last two digits.
+function initials(s) {
+  if (isPool(s)) return '—'
+  const words = (s.name || '').trim().split(/\s+/).filter(Boolean)
+  if (words.length) return words.slice(0, 2).map(w => w[0]).join('').toUpperCase()
+  return (s.phoneNumber || '').slice(-2) || '?'
+}
+
+function MentorFilter({ stats, totals, value, onChange, status, onStatus }) {
+  const [query, setQuery] = useState('')
+  const searchable = stats.length > 6
+
+  const visible = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    if (!q) return stats
+    return stats.filter(s => `${mentorLabel(s)} ${s.phoneNumber || ''}`.toLowerCase().includes(q))
+  }, [stats, query])
+
+  const selected = value ? stats.find(s => mentorKey(s) === value) : null
+
+  return (
+    <div className="mb-5">
+      <div className="flex items-center justify-between gap-3 mb-2">
+        <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Mentor workload</p>
+        {searchable && (
+          <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search mentor…"
+            className="w-44 px-2.5 py-1.5 text-xs border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-400" />
+        )}
+      </div>
+
+      {/* Horizontal strip — stays one row and scrolls however many mentors there are */}
+      <div className="flex gap-2 overflow-x-auto pb-1 -mx-1 px-1">
+        <MentorChip active={value === ''} onClick={() => onChange('')}
+          avatar="ALL" label="All mentors" sub={`${stats.filter(s => !isPool(s)).length} mentors`}
+          done={totals?.completed || 0} incomplete={(totals?.pending || 0) + (totals?.assigned || 0)} />
+        {visible.map(s => (
+          <MentorChip key={mentorKey(s)} active={value === mentorKey(s)} onClick={() => onChange(mentorKey(s))}
+            avatar={initials(s)} label={mentorLabel(s)} sub={mentorSub(s)} pool={isPool(s)}
+            done={s.completed} incomplete={incompleteOf(s)} />
+        ))}
+        {!visible.length && <p className="text-xs text-gray-400 py-3">No mentor matches “{query}”.</p>}
+      </div>
+
+      {selected && <MentorSummary stat={selected} status={status} onStatus={onStatus} onClear={() => onChange('')} />}
+    </div>
+  )
+}
+
+function MentorChip({ avatar, label, sub, done, incomplete, active, pool, onClick }) {
+  const total = done + incomplete
+  const pct = total ? Math.round((done / total) * 100) : 0
+  return (
+    <button onClick={onClick} title={`${label} — ${done} of ${total} evaluated`}
+      className={`shrink-0 w-[190px] text-left p-2.5 rounded-xl border transition-all ${
+        active
+          ? 'border-indigo-500 bg-indigo-50/60 shadow-sm ring-1 ring-indigo-500/20'
+          : `bg-white hover:border-gray-300 hover:shadow-sm ${pool ? 'border-dashed border-gray-300' : 'border-gray-200'}`
+      }`}>
+      <div className="flex items-center gap-2.5">
+        <span className={`w-8 h-8 shrink-0 rounded-lg grid place-items-center text-[11px] font-bold tracking-tight ${
+          active ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-500'
+        }`}>{avatar}</span>
+        <span className="min-w-0">
+          <span className={`block text-[13px] font-semibold truncate ${active ? 'text-indigo-900' : 'text-gray-800'}`}>{label}</span>
+          <span className="block text-[11px] text-gray-400 truncate">{sub || ' '}</span>
+        </span>
+      </div>
+
+      {/* completion bar */}
+      <div className="mt-2.5 h-1.5 rounded-full bg-gray-100 overflow-hidden">
+        <div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${pct}%` }} />
+      </div>
+      <div className="flex items-center justify-between mt-1.5 text-[11px]">
+        <span className="font-semibold text-emerald-700">{done} done</span>
+        <span className={`font-semibold ${incomplete ? 'text-amber-600' : 'text-gray-300'}`}>{incomplete} pending</span>
+      </div>
+    </button>
+  )
+}
+
+// Detail strip for the selected mentor — the stat tiles double as status filters.
+function MentorSummary({ stat, status, onStatus, onClear }) {
+  const total = stat.total
+  const pct = total ? Math.round((stat.completed / total) * 100) : 0
+  const tiles = [
+    ['',          'Total',       total,         'text-gray-900'],
+    ['pending',   'In pool',     stat.pending,  'text-amber-600'],
+    ['assigned',  'In progress', stat.assigned, 'text-blue-600'],
+    ['completed', 'Completed',   stat.completed,'text-emerald-600'],
+  ]
+  return (
+    <div className="mt-3 rounded-xl border border-gray-200 bg-gray-50/70 p-3.5">
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <p className="text-sm font-bold text-gray-900">{mentorLabel(stat)}</p>
+          <p className="text-xs text-gray-500">
+            {isPool(stat)
+              ? 'Papers waiting for a mentor to claim or be assigned.'
+              : `${pct}% evaluated · ${incompleteOf(stat)} still pending${stat.phoneNumber ? ` · ${stat.phoneNumber}` : ''}`}
+          </p>
+        </div>
+        <button onClick={onClear} className="text-xs font-semibold text-gray-500 hover:text-gray-800">✕ Clear</button>
+      </div>
+
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-3">
+        {tiles.map(([val, label, n, color]) => (
+          <button key={label} onClick={() => onStatus(val)}
+            className={`px-3 py-2 rounded-lg border text-left transition-colors ${
+              status === val ? 'border-indigo-400 bg-white ring-1 ring-indigo-400/30' : 'border-gray-200 bg-white hover:border-gray-300'
+            }`}>
+            <span className={`block text-lg font-bold leading-none ${color}`}>{n}</span>
+            <span className="block text-[11px] text-gray-500 mt-1">{label}</span>
+          </button>
+        ))}
+      </div>
+    </div>
   )
 }
 
