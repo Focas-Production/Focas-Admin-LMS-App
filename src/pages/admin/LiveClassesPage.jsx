@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { apiFetch } from '../../api'
 import AttendanceModal from '../../components/AttendanceModal'
+import SubmissionsModal from '../../components/SubmissionsModal'
 import SchedulerBoard from '../../components/SchedulerBoard'
 
 function fmtWhen(d) {
@@ -42,6 +43,8 @@ export default function LiveClassesPage() {
   const [busyId, setBusyId]   = useState(null)
   const [error, setError]     = useState('')
   const [attendance, setAttendance] = useState(null)  // { title, roster, class } modal
+  const [submissions, setSubmissions] = useState(null) // { id, title } review modal
+  const [subCounts, setSubCounts] = useState({})       // classId → { total, pending }
   const [copied, setCopied]   = useState('')          // "roomKey/trackKey" just copied
   const [allot, setAllot]     = useState(null)        // { cls, students, loading, saving } edit modal
 
@@ -82,6 +85,16 @@ export default function LiveClassesPage() {
       .then(d => setHosts(d.hosts || []))
       .catch(() => {})
   }, [load, loadTopology])
+
+  // Submission badges for every listed class in one request. Badge-only data, so
+  // a failure stays silent rather than raising an error banner over the list.
+  useEffect(() => {
+    const ids = (classes || []).map(c => c._id)
+    if (!ids.length) return
+    apiFetch(`/api/live-classes/manage/submission-counts?ids=${ids.join(',')}`)
+      .then(d => setSubCounts(d.counts || {}))
+      .catch(() => {})
+  }, [classes])
 
   const act = async (cls, action) => {
     const verb = action === 'end' ? 'End this class for everyone?' : 'Cancel this scheduled class?'
@@ -305,6 +318,22 @@ export default function LiveClassesPage() {
                         Attendance
                       </button>
                     )}
+                    {(c.status === 'live' || c.status === 'ended') && (
+                      <button onClick={() => setSubmissions({ id: c._id, title: c.title })}
+                        title="Student work handed in for this class"
+                        className={`px-3 py-1.5 rounded-lg border text-xs font-semibold ${
+                          subCounts[c._id]?.pending
+                            ? 'border-amber-300 text-amber-700 hover:bg-amber-50'
+                            : 'border-gray-200 text-gray-600 hover:bg-gray-50'}`}>
+                        Submissions
+                        {subCounts[c._id]?.total > 0 && (
+                          <span className={`ml-1.5 text-[10px] font-bold px-1.5 py-0.5 rounded-full ${
+                            subCounts[c._id].pending ? 'bg-amber-500 text-white' : 'bg-gray-200 text-gray-600'}`}>
+                            {subCounts[c._id].pending || subCounts[c._id].total}
+                          </span>
+                        )}
+                      </button>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -316,6 +345,18 @@ export default function LiveClassesPage() {
       {attendance && (
         <AttendanceModal title={attendance.title} roster={attendance.roster} classInfo={attendance.class}
           meta={attendance.meta} onToggleRecord={updateAttendanceRecord} onClose={() => setAttendance(null)} />
+      )}
+
+      {/* Student work handed in for this class */}
+      {submissions && (
+        <SubmissionsModal
+          classId={submissions.id}
+          title={submissions.title}
+          apiFetch={apiFetch}
+          accent="blue"
+          onCountsChange={(counts) => setSubCounts(c => ({ ...c, [submissions.id]: counts }))}
+          onClose={() => setSubmissions(null)}
+        />
       )}
 
       {/* Edit-allotment modal */}
