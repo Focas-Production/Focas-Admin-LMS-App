@@ -72,7 +72,8 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
   const [staged, setStaged]     = useState({})     // cellId → { day, slot, col, ids: [] }
   const [review, setReview]     = useState(false)  // review-and-save modal open
   const [clipboard, setClipboard] = useState(null) // { ids: [], from: label } — copied roster
-  const [newMeta, setNewMeta]   = useState({})     // cellId → { title, hostUserId } for new classes
+  const [newMeta, setNewMeta]   = useState({})     // cellId → { title, hostUserId, subjectId, chapterId, unitId, day, slot, col }
+  const [setup, setSetup]       = useState(null)   // cell being configured: { cellId, day, slot, col, hostUserId, subjectId, chapterId, unitId }
   const [saving, setSaving]     = useState(false)
   const [error, setError]       = useState('')
 
@@ -162,6 +163,50 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
   // Let the page show "N staged" on its tab bar while the board is hidden.
   useEffect(() => { onStagedCount?.(stagedCount) }, [stagedCount, onStagedCount])
 
+  // ── per-cell class setup ──
+  // An empty cell is configured FIRST (mentor + subject/chapter, unit optional);
+  // the cell then wears that setup so the admin knows exactly what they're
+  // dragging students into. Stored in newMeta, same place Review & save reads.
+
+  const cellMetaReady = (cellId) => {
+    const m = newMeta[cellId]
+    return !!(m?.hostUserId && m?.subjectId && m?.chapterId)
+  }
+
+  const hostName = (id) =>
+    (hosts || []).find(h => String(h.id) === String(id))?.name || '…'
+
+  const openSetup = (day, slot, col) => {
+    const cellId = `${dayKey(day)}/${slot.key}/${col.roomName}`
+    const m = newMeta[cellId] || {}
+    setSetup({
+      cellId, day, slot, col,
+      hostUserId: m.hostUserId || '',
+      subjectId: m.subjectId || '', chapterId: m.chapterId || '', unitId: m.unitId || '',
+    })
+  }
+
+  const saveSetup = () => {
+    if (!setup) return
+    const locked = roomLockedHost(setup.cellId, setup)
+    const hostUserId = locked ? locked.id : setup.hostUserId
+    if (!hostUserId || !setup.subjectId || !setup.chapterId) return
+    const { cellId, day, slot, col, subjectId, chapterId, unitId } = setup
+    setNewMeta(m => ({ ...m, [cellId]: {
+      ...(m[cellId] || {}),
+      title: m[cellId]?.title || `${col.roomLabel} · ${col.trackLabel} — ${slot.name}`,
+      hostUserId, subjectId, chapterId, unitId,
+      day, slot, col,   // coords let sibling cells see this pick for mentor locking
+    } }))
+    setSetup(null)
+  }
+
+  const clearSetup = () => {
+    if (!setup) return
+    setNewMeta(m => { const next = { ...m }; delete next[setup.cellId]; return next })
+    setSetup(null)
+  }
+
   // ── staging ──
 
   const stageDrop = (day, slot, col, studentId) => {
@@ -177,6 +222,9 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
       if (cell.ids.includes(id)) return prev
       return { ...prev, [cellId]: { ...cell, ids: [...cell.ids, id] } }
     })
+    // Dropped into a cell that hasn't been set up yet → ask for mentor and
+    // chapter right away instead of waiting for Review & save to complain.
+    if (!existing && !cellMetaReady(cellId)) openSetup(day, slot, col)
   }
 
   // ── copy & paste a slot's roster ──
@@ -210,6 +258,7 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
       if (merged.length === cell.ids.length) return prev
       return { ...prev, [cellId]: { ...cell, ids: merged } }
     })
+    if (!existing && !cellMetaReady(cellId)) openSetup(day, slot, col)
   }
 
   const unstage = (cellId, id) => {
@@ -263,6 +312,16 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
         const host = (hosts || []).find(x => String(x.id) === String(h))
         return { id: String(h), name: host?.name || 'same mentor', from: other.col.trackLabel }
       }
+    }
+    // Cells configured through the setup form but with no students staged yet
+    // also lock the room — the pick is just as real, it only lacks drops so far.
+    for (const [otherId, other] of Object.entries(newMeta)) {
+      if (otherId === cellId || !other?.col || !other?.hostUserId) continue
+      if (dayKey(other.day) !== dayKey(cell.day) || other.slot.key !== cell.slot.key) continue
+      if (other.col.roomKey !== cell.col.roomKey || other.col.roomName === cell.col.roomName) continue
+      if (cellClass(other.day, other.slot, other.col.roomName)) continue   // saved class → caught above
+      const host = (hosts || []).find(x => String(x.id) === String(other.hostUserId))
+      return { id: String(other.hostUserId), name: host?.name || 'same mentor', from: other.col.trackLabel }
     }
     return null
   }
@@ -474,15 +533,16 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
                         {SLOTS.map(slot => (
                           <tr key={slot.key}>
                             <td className="align-top px-2 py-1.5">
-                              <p className="text-xs font-semibold text-gray-700 whitespace-nowrap">{slot.icon} {slot.name}</p>
-                              <p className="text-[10px] text-gray-400 whitespace-nowrap">
-                                {fmtHour(slot.startHour)} – {fmtHour(slot.endHour)}
+                              <p className="text-xs font-semibold text-gray-700 whitespace-nowrap">
+                                {slot.icon} {fmtHour(slot.startHour)} – {fmtHour(slot.endHour)}
                               </p>
+                              <p className="text-[10px] text-gray-400 whitespace-nowrap">{slot.name}</p>
                             </td>
                             {visibleCols.map(col => {
                               const cls = cellClass(day, slot, col.roomName)
                               const cellId = `${k}/${slot.key}/${col.roomName}`
                               const cellStaged = staged[cellId]?.ids || []
+                              const cfgReady = !cls && cellMetaReady(cellId)
                               const hovered = overCell === cellId
                               const past = !cls &&
                                 new Date(day.getFullYear(), day.getMonth(), day.getDate(), slot.endHour) < new Date()
@@ -491,7 +551,7 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
                                   onDragOver={e => { if (past) return; e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; setOverCell(cellId) }}
                                   onDragLeave={() => setOverCell(o => (o === cellId ? null : o))}
                                   onDrop={e => { if (past) return; e.preventDefault(); stageDrop(day, slot, col, e.dataTransfer.getData('text/plain')) }}>
-                                  <div className={`relative rounded-xl border p-1.5 min-h-[52px] transition-colors
+                                  <div className={`relative rounded-xl border p-1.5 transition-colors ${cfgReady ? 'min-h-[92px]' : 'min-h-[52px]'}
                                     ${hovered ? 'border-indigo-400 bg-indigo-50'
                                       : cellStaged.length ? 'border-amber-300 bg-amber-50/60'
                                       : cls ? 'border-gray-200 bg-gray-50'
@@ -523,14 +583,38 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
                                             <p className="text-[11px] font-semibold text-gray-800 truncate" title={cls.title}>
                                               {cls.status === 'live' && <span className="text-red-500">● </span>}{cls.title}
                                             </p>
-                                            <p className="text-[10px] text-gray-400 truncate">{cls.host?.name}</p>
-                                            {cls.chapter?.name && (
-                                              <p className="text-[10px] text-indigo-500 truncate mb-1" title={`${cls.subject?.name || ''} · ${cls.chapter.name}${cls.unit?.name ? ` · ${cls.unit.name}` : ''}`}>
-                                                📖 {cls.chapter.name}{cls.unit?.name ? ` · ${cls.unit.name}` : ''}
-                                              </p>
-                                            )}
+                                            {/* Saved classes wear the same line as configured cells:
+                                                Mentor - Subject - Chapter - Unit, wrapping when long. */}
+                                            <p className="text-[11px] font-semibold leading-snug break-words mb-1">
+                                              <span className="text-gray-900">🧑‍🏫 {cls.host?.name}</span>
+                                              <span className="text-indigo-700">
+                                                {cls.subject?.name ? ` - ${cls.subject.name}` : ''}{cls.chapter?.name ? ` - ${cls.chapter.name}` : ''}{cls.unit?.name ? ` - ${cls.unit.name}` : ''}
+                                              </span>
+                                            </p>
                                           </>
                                         )}
+                                        {/* Setup worn by a not-yet-saved cell: who teaches it and
+                                            what — so drops land somewhere with a face and a topic. */}
+                                        {cfgReady && (() => {
+                                          const m = newMeta[cellId]
+                                          const subj = subjects.find(s => String(s._id) === String(m.subjectId))
+                                          const chap = (subj?.chapters || []).find(x => String(x._id) === String(m.chapterId))
+                                          const unit = (chap?.units || []).find(u => String(u._id) === String(m.unitId))
+                                          return (
+                                            <button type="button" onClick={() => openSetup(day, slot, col)}
+                                              title="Change mentor / subject / chapter"
+                                              className="block w-full text-left mb-1">
+                                              {/* One flowing line: Tutor - Subject - Chapter - Unit.
+                                                  No truncate — when it can't fit, it wraps instead. */}
+                                              <p className="text-[11px] font-semibold leading-snug break-words">
+                                                <span className="text-gray-900">🧑‍🏫 {hostName(m.hostUserId)}</span>
+                                                <span className="text-indigo-700">
+                                                  {subj ? ` - ${subj.name}` : ''}{chap ? ` - ${chap.name}` : ''}{unit ? ` - ${unit.name}` : ''}
+                                                </span>
+                                              </p>
+                                            </button>
+                                          )
+                                        })()}
                                         <div className="flex flex-wrap gap-1">
                                           {(cls?.allowedStudents || []).map(id => (
                                             <span key={String(id)}
@@ -552,13 +636,24 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
                                             </span>
                                           ))}
                                           {!cls && !cellStaged.length && (
-                                            clipboard ? (
+                                            !cfgReady ? (
+                                              // Setup comes first — the cell only invites drops
+                                              // once it knows its mentor and chapter.
+                                              <button type="button" onClick={() => openSetup(day, slot, col)}
+                                                className="text-[10px] text-indigo-400 hover:text-indigo-600 font-semibold w-full pt-2 text-center">
+                                                ＋ Set mentor &amp; chapter
+                                              </button>
+                                            ) : clipboard ? (
                                               <button type="button" onClick={() => pasteCell(day, slot, col)}
-                                                className="text-[10px] text-amber-500 hover:text-amber-700 font-semibold w-full pt-2 text-center">
+                                                className="text-[11px] text-amber-500 hover:text-amber-700 font-semibold w-full py-4 text-center border-2 border-dashed border-amber-200 rounded-lg mt-1">
                                                 📋 paste {clipboard.ids.length} student{clipboard.ids.length > 1 ? 's' : ''}
                                               </button>
                                             ) : (
-                                              <span className="text-[10px] text-gray-300 w-full pt-2 text-center">drop student here</span>
+                                              // Configured cell: a roomy dashed target, so the drag
+                                              // has somewhere obvious (and easy) to land.
+                                              <span className="text-[11px] text-gray-400 w-full py-4 text-center border-2 border-dashed border-indigo-200 rounded-lg mt-1">
+                                                ⬇ drop student here
+                                              </span>
                                             )
                                           )}
                                         </div>
@@ -610,6 +705,89 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
           </button>
         </div>
       )}
+
+      {/* ── Per-slot setup: mentor + subject/chapter (unit optional) ── */}
+      {setup && (() => {
+        const locked = roomLockedHost(setup.cellId, setup)
+        const subj = subjects.find(s => String(s._id) === setup.subjectId)
+        const chap = (subj?.chapters || []).find(c => String(c._id) === setup.chapterId)
+        const ready = (locked || setup.hostUserId) && setup.subjectId && setup.chapterId
+        const patch = (p) => setSetup(s => s && ({ ...s, ...p }))
+        return (
+          <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4"
+            onClick={() => setSetup(null)}>
+            <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-5" onClick={e => e.stopPropagation()}>
+              <h2 className="text-base font-bold text-gray-900 mb-0.5">Set up this class</h2>
+              <p className="text-xs text-gray-400 mb-4">
+                {setup.slot.icon} {cellLabel(setup)} — pick who teaches and what, then drag students in.
+              </p>
+
+              <div className="space-y-2">
+                <select value={locked ? locked.id : (setup.hostUserId || '')} disabled={!!locked}
+                  onChange={e => patch({ hostUserId: e.target.value })}
+                  className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg bg-white outline-none focus:ring-2 focus:ring-indigo-400 disabled:bg-gray-50 disabled:text-gray-500">
+                  <option value="">Select a mentor…</option>
+                  {(hosts || []).map(h => <option key={h.id} value={String(h.id)}>{h.name} ({h.role})</option>)}
+                  {locked && !(hosts || []).some(h => String(h.id) === locked.id) && (
+                    <option value={locked.id}>{locked.name}</option>
+                  )}
+                </select>
+                {locked && (
+                  <p className="text-[10px] text-amber-600">
+                    🔒 {setup.col.roomLabel} already has <b>{locked.name}</b> in this slot ({locked.from}) — one room uses one mentor.
+                  </p>
+                )}
+
+                <select value={setup.subjectId}
+                  onChange={e => patch({ subjectId: e.target.value, chapterId: '', unitId: '' })}
+                  className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg bg-white outline-none focus:ring-2 focus:ring-indigo-400">
+                  <option value="">Subject…</option>
+                  {subjects.map(s => <option key={s._id} value={String(s._id)}>{s.name} ({s.level})</option>)}
+                </select>
+                <select value={setup.chapterId} disabled={!subj}
+                  onChange={e => patch({ chapterId: e.target.value, unitId: '' })}
+                  className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg bg-white outline-none focus:ring-2 focus:ring-indigo-400 disabled:bg-gray-50 disabled:text-gray-400">
+                  <option value="">{subj ? (subj.chapters?.length ? 'Chapter…' : 'No chapters in subject') : 'Pick subject first'}</option>
+                  {/* ✓ = already taught — helps pick what comes next */}
+                  {(subj?.chapters || []).map(c => (
+                    <option key={c._id} value={String(c._id)}>{c.completed ? '✓ ' : ''}{c.name}</option>
+                  ))}
+                </select>
+                {/* Unit only shows up when the chapter actually has units */}
+                {!!chap?.units?.length && (
+                  <select value={setup.unitId}
+                    onChange={e => patch({ unitId: e.target.value })}
+                    className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg bg-white outline-none focus:ring-2 focus:ring-indigo-400">
+                    <option value="">Unit (optional)…</option>
+                    {(chap.units || []).map(u => (
+                      <option key={u._id} value={String(u._id)}>{u.completed ? '✓ ' : ''}{u.name}</option>
+                    ))}
+                  </select>
+                )}
+              </div>
+
+              <div className="flex items-center justify-between mt-4">
+                {newMeta[setup.cellId] ? (
+                  <button onClick={clearSetup}
+                    className="text-xs font-semibold text-gray-400 hover:text-red-500">
+                    Remove setup
+                  </button>
+                ) : <span />}
+                <div className="flex gap-2">
+                  <button onClick={() => setSetup(null)}
+                    className="px-4 py-2 rounded-xl border border-gray-200 text-gray-500 text-sm font-semibold hover:bg-gray-50">
+                    Cancel
+                  </button>
+                  <button onClick={saveSetup} disabled={!ready}
+                    className="px-4 py-2 rounded-xl bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700 disabled:bg-gray-300">
+                    Save
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
 
       {/* ── One confirmation for everything ── */}
       {review && (

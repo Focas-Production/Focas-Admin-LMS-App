@@ -1,5 +1,9 @@
+import { useState } from 'react'
 import { Outlet, NavLink, useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext'
+
+// Sidebar starts in whatever state the admin left it in last time (per browser).
+const SIDEBAR_KEY = 'admin-sidebar-collapsed'
 
 const NAV_ITEMS = [
   {
@@ -98,6 +102,16 @@ const NAV_ITEMS = [
 export default function AdminLayout() {
   const { user, logout } = useAuth()
   const navigate = useNavigate()
+  const [collapsed, setCollapsed] = useState(() => {
+    try { return localStorage.getItem(SIDEBAR_KEY) === '1' } catch { return false }
+  })
+
+  const toggleSidebar = () => {
+    setCollapsed(c => {
+      try { localStorage.setItem(SIDEBAR_KEY, c ? '0' : '1') } catch { /* private mode */ }
+      return !c
+    })
+  }
 
   function handleLogout() {
     logout()
@@ -106,60 +120,82 @@ export default function AdminLayout() {
 
   return (
     <div className="flex h-screen bg-gray-50">
-      {/* Sidebar */}
-      <aside className="w-60 bg-slate-900 flex flex-col">
+      {/* Sidebar — collapses to an icon-only rail to give wide pages (the
+          scheduler board especially) the full screen width. */}
+      <aside className={`${collapsed ? 'w-[68px]' : 'w-60'} bg-slate-900 flex flex-col transition-all duration-200 flex-shrink-0`}>
         {/* Logo */}
-        <div className="px-5 py-5 border-b border-slate-700">
-          <div className="flex items-center gap-2.5">
+        <div className={`py-5 border-b border-slate-700 ${collapsed ? 'px-3' : 'px-5'}`}>
+          <div className={`flex items-center gap-2.5 ${collapsed ? 'justify-center' : ''}`}>
             <div className="w-8 h-8 bg-indigo-500 rounded-lg flex items-center justify-center flex-shrink-0">
               <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
                   d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
               </svg>
             </div>
-            <div>
-              <p className="text-white font-bold text-sm leading-none">FOCAS LMS</p>
-              <p className="text-slate-400 text-xs mt-0.5">Admin Panel</p>
-            </div>
+            {!collapsed && (
+              <div className="min-w-0">
+                <p className="text-white font-bold text-sm leading-none whitespace-nowrap">FOCAS LMS</p>
+                <p className="text-slate-400 text-xs mt-0.5 whitespace-nowrap">Admin Panel</p>
+              </div>
+            )}
           </div>
         </div>
 
+        {/* Collapse / expand */}
+        <button onClick={toggleSidebar}
+          title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          className={`mx-3 mt-3 flex items-center gap-3 px-3 py-2 rounded-xl text-slate-400 hover:bg-slate-800 hover:text-white text-sm transition-colors ${collapsed ? 'justify-center' : ''}`}>
+          <svg className="w-5 h-5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            {collapsed
+              ? <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 5l7 7-7 7M5 5l7 7-7 7" />
+              : <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 19l-7-7 7-7m8 14l-7-7 7-7" />}
+          </svg>
+          {!collapsed && <span className="whitespace-nowrap">Collapse</span>}
+        </button>
+
         {/* Nav */}
-        <nav className="flex-1 px-3 py-4 space-y-1">
+        <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
           {NAV_ITEMS.map(item => (
             <NavLink key={item.to} to={item.to} end={item.end}
+              title={collapsed ? item.label : undefined}
               className={({ isActive }) =>
                 `flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-colors ${
+                  collapsed ? 'justify-center' : ''
+                } ${
                   isActive
                     ? 'bg-indigo-600 text-white'
                     : 'text-slate-400 hover:bg-slate-800 hover:text-white'
                 }`
               }
             >
-              {item.icon}
-              {item.label}
+              <span className="flex-shrink-0">{item.icon}</span>
+              {!collapsed && <span className="whitespace-nowrap">{item.label}</span>}
             </NavLink>
           ))}
         </nav>
 
         {/* User */}
         <div className="px-3 py-4 border-t border-slate-700">
-          <div className="flex items-center gap-3 px-2 mb-3">
+          <div className={`flex items-center gap-3 mb-3 ${collapsed ? 'justify-center' : 'px-2'}`}
+            title={collapsed ? `${user?.name || 'Admin'} · ${user?.phoneNumber || user?.email || ''}` : undefined}>
             <div className="w-8 h-8 rounded-full bg-indigo-500 flex items-center justify-center text-white text-sm font-bold flex-shrink-0">
               {user?.name?.[0]?.toUpperCase() || 'A'}
             </div>
-            <div className="min-w-0">
-              <p className="text-white text-sm font-medium truncate">{user?.name || 'Admin'}</p>
-              <p className="text-slate-400 text-xs truncate">{user?.phoneNumber || user?.email}</p>
-            </div>
+            {!collapsed && (
+              <div className="min-w-0">
+                <p className="text-white text-sm font-medium truncate">{user?.name || 'Admin'}</p>
+                <p className="text-slate-400 text-xs truncate">{user?.phoneNumber || user?.email}</p>
+              </div>
+            )}
           </div>
           <button onClick={handleLogout}
-            className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-slate-400 hover:bg-slate-800 hover:text-red-400 text-sm transition-colors">
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            title={collapsed ? 'Logout' : undefined}
+            className={`w-full flex items-center gap-2 px-3 py-2 rounded-xl text-slate-400 hover:bg-slate-800 hover:text-red-400 text-sm transition-colors ${collapsed ? 'justify-center' : ''}`}>
+            <svg className="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
                 d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
             </svg>
-            Logout
+            {!collapsed && 'Logout'}
           </button>
         </div>
       </aside>

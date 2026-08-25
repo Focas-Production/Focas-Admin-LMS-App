@@ -47,6 +47,8 @@ export default function LiveClassesPage() {
   const [subCounts, setSubCounts] = useState({})       // classId → { total, pending }
   const [copied, setCopied]   = useState('')          // "roomKey/trackKey" just copied
   const [allot, setAllot]     = useState(null)        // { cls, students, loading, saving } edit modal
+  const [subjects, setSubjects] = useState([])        // subject → chapters → units tree, for the edit modal
+  const [edit, setEdit]       = useState(null)        // { cls, hostUserId, subjectId, chapterId, unitId, saving, error }
 
   const copyTrackLink = async (roomKey, trackKey) => {
     const url = trackUrl(roomKey, trackKey)
@@ -83,6 +85,9 @@ export default function LiveClassesPage() {
     loadTopology()
     apiFetch('/api/live-classes/manage/hosts')
       .then(d => setHosts(d.hosts || []))
+      .catch(() => {})
+    apiFetch('/api/admin/subjects')
+      .then(d => setSubjects((d.subjects || []).filter(s => s.isActive)))
       .catch(() => {})
   }, [load, loadTopology])
 
@@ -136,6 +141,38 @@ export default function LiveClassesPage() {
     }
   }
 
+  // Edit a scheduled class before it starts: who teaches it and what it teaches.
+  const openEdit = (cls) => {
+    setEdit({
+      cls,
+      hostUserId: cls.host?.userId ? String(cls.host.userId) : '',
+      subjectId:  cls.subject?.subjectId ? String(cls.subject.subjectId) : '',
+      chapterId:  cls.chapter?.chapterId ? String(cls.chapter.chapterId) : '',
+      unitId:     cls.unit?.unitId ? String(cls.unit.unitId) : '',
+      saving: false, error: '',
+    })
+  }
+
+  const saveEdit = async () => {
+    if (!edit || edit.saving) return
+    setEdit(e => ({ ...e, saving: true, error: '' }))
+    try {
+      await apiFetch(`/api/live-classes/manage/${edit.cls._id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          // JSON drops undefined — an empty host means "leave the host alone",
+          // while the curriculum ids always travel together as one pick.
+          hostUserId: edit.hostUserId || undefined,
+          subjectId: edit.subjectId, chapterId: edit.chapterId, unitId: edit.unitId,
+        }),
+      })
+      setEdit(null)
+      await load()
+    } catch (err) {
+      setEdit(e => e && ({ ...e, saving: false, error: err.message || 'Could not update the class' }))
+    }
+  }
+
   const openAttendance = async (cls) => {
     setAttendance({ id: cls._id, title: cls.title, roster: null, class: null, meta: null })
     try {
@@ -168,7 +205,7 @@ export default function LiveClassesPage() {
   return (
     <div className="p-6 md:p-8 max-w-screen-2xl mx-auto">
       <h1 className="text-2xl font-bold text-gray-900 mb-1">Live Classes</h1>
-      <p className="text-gray-500 text-sm mb-6">Drag students onto any day's slots, then confirm everything once with Review &amp; save.</p>
+      <p className="text-gray-500 text-sm mb-6">Set a slot's mentor &amp; chapter, drag students into it, then confirm everything once with Review &amp; save.</p>
 
       {error && <p className="text-sm text-red-500 mb-3">{error}</p>}
 
@@ -271,9 +308,14 @@ export default function LiveClassesPage() {
                 <tr key={c._id}>
                   <td className="px-4 py-3">
                     <p className="font-medium text-gray-900">{c.title}</p>
-                    {c.chapter?.name && (
-                      <p className="text-xs text-indigo-500 truncate max-w-xs">
-                        📖 {c.subject?.name ? `${c.subject.name} · ` : ''}{c.chapter.name}{c.unit?.name ? ` · ${c.unit.name}` : ''}
+                    {/* Same one-line format the scheduler cells use:
+                        Mentor - Subject - Chapter - Unit, wrapping when long. */}
+                    {(c.host?.name || c.chapter?.name) && (
+                      <p className="text-xs font-semibold leading-snug break-words max-w-md">
+                        <span className="text-gray-900">🧑‍🏫 {c.host?.name || '—'}</span>
+                        <span className="text-indigo-700">
+                          {c.subject?.name ? ` - ${c.subject.name}` : ''}{c.chapter?.name ? ` - ${c.chapter.name}` : ''}{c.unit?.name ? ` - ${c.unit.name}` : ''}
+                        </span>
                       </p>
                     )}
                     {c.description && <p className="text-xs text-gray-400 truncate max-w-xs">{c.description}</p>}
@@ -294,6 +336,13 @@ export default function LiveClassesPage() {
                     </span>
                   </td>
                   <td className="px-4 py-3 text-right whitespace-nowrap space-x-1.5">
+                    {/* Only before it starts — the server rejects edits once live. */}
+                    {c.status === 'scheduled' && (
+                      <button onClick={() => openEdit(c)}
+                        className="px-3 py-1.5 rounded-lg border border-gray-200 text-gray-600 text-xs font-semibold hover:bg-gray-50">
+                        Edit
+                      </button>
+                    )}
                     {(c.status === 'scheduled' || c.status === 'live') && (
                       <button onClick={() => openAllotment(c)}
                         className="px-3 py-1.5 rounded-lg border border-indigo-200 text-indigo-600 text-xs font-semibold hover:bg-indigo-50">
@@ -358,6 +407,81 @@ export default function LiveClassesPage() {
           onClose={() => setSubmissions(null)}
         />
       )}
+
+      {/* Edit a scheduled class — host and subject/chapter/unit, before it starts */}
+      {edit && (() => {
+        const subj = subjects.find(s => String(s._id) === edit.subjectId)
+        const chap = (subj?.chapters || []).find(c => String(c._id) === edit.chapterId)
+        const set = (patch) => setEdit(e => e && ({ ...e, ...patch }))
+        return (
+          <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4"
+            onClick={() => !edit.saving && setEdit(null)}>
+            <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg p-5" onClick={e => e.stopPropagation()}>
+              <h2 className="text-base font-bold text-gray-900 mb-0.5">Edit class</h2>
+              <p className="text-xs text-gray-400 mb-4 truncate">
+                {edit.cls.title} · {fmtWhen(edit.cls.scheduledStart)}
+              </p>
+
+              {edit.error && <p className="text-xs text-red-500 mb-3">{edit.error}</p>}
+
+              <div className="space-y-3">
+                <div>
+                  <p className="text-[11px] font-bold text-gray-500 uppercase mb-1">Host</p>
+                  <select value={edit.hostUserId}
+                    onChange={e => set({ hostUserId: e.target.value })}
+                    className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg bg-white outline-none focus:ring-2 focus:ring-indigo-400">
+                    <option value="">Keep current host{edit.cls.host?.name ? ` (${edit.cls.host.name})` : ''}</option>
+                    {hosts.map(h => <option key={h.id} value={String(h.id)}>{h.name} ({h.role})</option>)}
+                  </select>
+                </div>
+
+                <div>
+                  <p className="text-[11px] font-bold text-gray-500 uppercase mb-1">What this class teaches</p>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    <select value={edit.subjectId}
+                      onChange={e => set({ subjectId: e.target.value, chapterId: '', unitId: '' })}
+                      className="px-3 py-2 text-xs border border-gray-200 rounded-lg bg-white outline-none focus:ring-2 focus:ring-indigo-400">
+                      <option value="">Subject…</option>
+                      {subjects.map(s => <option key={s._id} value={String(s._id)}>{s.name} ({s.level})</option>)}
+                    </select>
+                    <select value={edit.chapterId} disabled={!subj}
+                      onChange={e => set({ chapterId: e.target.value, unitId: '' })}
+                      className="px-3 py-2 text-xs border border-gray-200 rounded-lg bg-white outline-none focus:ring-2 focus:ring-indigo-400 disabled:bg-gray-50 disabled:text-gray-400">
+                      <option value="">{subj ? (subj.chapters?.length ? 'Chapter…' : 'No chapters in subject') : 'Pick subject first'}</option>
+                      {/* ✓ = already taught — helps pick what comes next */}
+                      {(subj?.chapters || []).map(c => (
+                        <option key={c._id} value={String(c._id)}>{c.completed ? '✓ ' : ''}{c.name}</option>
+                      ))}
+                    </select>
+                    <select value={edit.unitId} disabled={!chap?.units?.length}
+                      onChange={e => set({ unitId: e.target.value })}
+                      className="px-3 py-2 text-xs border border-gray-200 rounded-lg bg-white outline-none focus:ring-2 focus:ring-indigo-400 disabled:bg-gray-50 disabled:text-gray-400">
+                      <option value="">{chap?.units?.length ? 'Unit (optional)…' : 'No units'}</option>
+                      {(chap?.units || []).map(u => (
+                        <option key={u._id} value={String(u._id)}>{u.completed ? '✓ ' : ''}{u.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                  {edit.subjectId && !edit.chapterId && !!(subj?.chapters || []).length && (
+                    <p className="text-[10px] text-amber-600 mt-1">Pick a chapter — a subject alone doesn't track progress.</p>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-2 mt-5">
+                <button onClick={() => setEdit(null)} disabled={edit.saving}
+                  className="px-4 py-2 rounded-xl border border-gray-200 text-gray-500 text-sm font-semibold hover:bg-gray-50">
+                  Cancel
+                </button>
+                <button onClick={saveEdit} disabled={edit.saving}
+                  className="px-4 py-2 rounded-xl bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700 disabled:bg-gray-300">
+                  {edit.saving ? 'Saving…' : 'Save changes'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
 
       {/* Edit-allotment modal */}
       {allot && (
