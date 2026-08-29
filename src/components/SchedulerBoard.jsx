@@ -1,5 +1,11 @@
 import { useState, useEffect, useMemo } from 'react'
 import { apiFetch } from '../api'
+import {
+  FIELD_DEFS, fieldDef, opsFor, newCondition, conditionComplete, conditionReady,
+  evalCondition, chapterConditionKey, studiesSubject, effectiveSlot,
+  normalizeCondition, subjectIdsOf, SLOT_OPTIONS, SLOT_SHORT,
+} from '../lib/rosterFilter'
+import SlotEditorModal from './SlotEditorModal'
 
 // Drag-and-drop class scheduler.
 //
@@ -29,18 +35,8 @@ const fmtHour = (h) => {
 
 const dayKey = (d) => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`
 
-// Does this student's enrollment cover this paper? Mirrors the server's scoping
-// in getStudentChapterProgress: an explicit paper list is exact, otherwise level
-// + group decide, and a paper with no group assigned yet counts for everyone in
-// the level. Students with nothing set match no subject — they're unconfigured,
-// not universally enrolled.
-function studiesSubject(student, subject) {
-  const picked = (student.caSubjects || []).map(String)
-  if (picked.length) return picked.includes(String(subject._id))
-  if (!student.caLevel || student.caLevel !== subject.level) return false
-  if (!student.caGroup || student.caGroup === 'both') return true
-  return !subject.group || subject.group === student.caGroup
-}
+// studiesSubject (enrollment ↔ paper scoping) lives in lib/rosterFilter.js now,
+// shared with the advanced filter engine so the two can't drift.
 
 // Compact "Inter · G1" / "Inter · 2 subj" tag for the roster rows.
 function enrollmentLabel(s) {
@@ -66,7 +62,22 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
   const [search, setSearch]     = useState('')
   const [enrolFilter, setEnrolFilter] = useState('all')   // see ENROLMENT_CHIPS
   const [subjFilter,  setSubjFilter]  = useState('')      // subject id, '' = any
+  const [chapFilter,  setChapFilter]  = useState('')      // chapter id, '' = any (needs a subject)
+  const [unitFilter,  setUnitFilter]  = useState('')      // unit id, '' = whole chapter
+  const [statusFilter, setStatusFilter] = useState('all') // 'all' | 'done' | 'pending' for the picked chapter
+  const [completion, setCompletion]   = useState(null)    // { key, ids: Set } — who completed the picked item
+  const [completionError, setCompletionError] = useState('')
+
+  // ── Zoho-style advanced filters ──
+  const [advOpen, setAdvOpen]           = useState(false)  // the drawer
+  const [advConditions, setAdvConditions] = useState([])   // condition rows, ANDed (lib/rosterFilter)
+  const [chapterSets, setChapterSets]   = useState({})     // condition key → Set(userIds) | 'error'
+  const [views, setViews]               = useState(null)   // saved filter views (server, shared)
+  const [activeViewId, setActiveViewId] = useState('')
+  const [slotEditor, setSlotEditor]     = useState(null)   // student whose slot times are being edited
   const [collapsed, setCollapsed] = useState({})   // dayKey → true when folded away
+  const [weekCount, setWeekCount] = useState(1)    // 7-day blocks on the board; "+ Add 7 more days" grows it
+  const [weekOpen, setWeekOpen]   = useState({})   // extra-week index → false when its dropdown is folded
   const [dragId, setDragId]     = useState(null)   // student id being dragged
   const [overCell, setOverCell] = useState(null)   // cell id under the drag
   const [staged, setStaged]     = useState({})     // cellId → { day, slot, col, ids: [] }
@@ -91,6 +102,9 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
     apiFetch('/api/admin/subjects')
       .then(d => setSubjects((d.subjects || []).filter(s => s.isActive)))
       .catch(() => setSubjects([]))
+    apiFetch('/api/admin/filter-views?scope=scheduler-roster')
+      .then(d => setViews(d.views || []))
+      .catch(() => setViews([]))
   }, [])
 
   // id → student, for rendering chips from ids.
@@ -102,11 +116,19 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
   const days = useMemo(() => {
     const out = []
     const now = new Date()
-    for (let i = 0; i < 7; i++) {
+    for (let i = 0; i < weekCount * 7; i++) {
       out.push(new Date(now.getFullYear(), now.getMonth(), now.getDate() + i))
     }
     return out
-  }, [])
+  }, [weekCount])
+
+  // The horizon split into 7-day blocks: block 0 is the next 7 days (always
+  // bare, as before); every block after it renders as a collapsible week card.
+  const weekChunks = useMemo(() => {
+    const out = []
+    for (let i = 0; i < days.length; i += 7) out.push(days.slice(i, i + 7))
+    return out
+  }, [days])
 
   // All four tracks in display order, with their parent room label.
   const trackCols = useMemo(() =>
@@ -139,24 +161,114 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
     ) || null
   }
 
-  // Roster filters, ANDed: free-text, how they're enrolled, and which paper they
-  // study — so "Intermediate G1 students who take FM" is two clicks before a drag.
+  // Roster filters, ANDed and drilling down: free-text, how they're enrolled,
+  // which paper they study, then which chapter/unit of it they've completed or
+  // still owe — so "G1 students who haven't finished Accounting chapter 2" is a
+  // few clicks before a drag.
   const pickedSubject = useMemo(
     () => (subjects || []).find(s => String(s._id) === subjFilter) || null,
     [subjects, subjFilter],
   )
+  const pickedChapter = useMemo(
+    () => (pickedSubject?.chapters || []).find(c => String(c._id) === chapFilter) || null,
+    [pickedSubject, chapFilter],
+  )
 
-  const filtered = (students || []).filter(s => {
-    const q = search.trim().toLowerCase()
-    if (q && !((s.name || '').toLowerCase().includes(q) || (s.phoneNumber || '').includes(q))) return false
+  // Who has completed the picked chapter/unit — same verdict the Progress pages
+  // show (manual override wins, else taught-to-them + attended enough). The
+  // stale flag stops an older, slower response from landing after a newer one
+  // and lying about the current selection.
+  const completionKey = `${subjFilter}|${chapFilter}|${unitFilter}`
+  useEffect(() => {
+    if (!subjFilter || !chapFilter) { setCompletion(null); setCompletionError(''); return }
+    let stale = false
+    setCompletionError('')
+    const key = `${subjFilter}|${chapFilter}|${unitFilter}`
+    apiFetch(`/api/admin/syllabus-completion?subjectId=${subjFilter}&chapterId=${chapFilter}${unitFilter ? `&unitId=${unitFilter}` : ''}`)
+      .then(d => { if (!stale) setCompletion({ key, ids: new Set(d.completedIds || []) }) })
+      .catch(err => { if (!stale) { setCompletion(null); setCompletionError(err.message || 'Could not check completion') } })
+    return () => { stale = true }
+  }, [subjFilter, chapFilter, unitFilter])
+  const completionReady = !!completion && completion.key === completionKey
 
+  // Advanced chapter-completion conditions each need their own who-completed-it
+  // set. Fetched once per distinct (subject, chapter, unit) and kept for the
+  // board's lifetime; 'error' marks a failed fetch so the condition passes
+  // everyone rather than silently hiding students.
+  useEffect(() => {
+    const need = [...new Set(
+      advConditions
+        .filter(c => c.field === 'chapter' && c.value?.subjectId && c.value?.chapterId)
+        .map(chapterConditionKey),
+    )].filter(k => !(k in chapterSets))
+    if (!need.length) return
+    let stale = false
+    for (const key of need) {
+      const [sub, ch, un] = key.split('|')
+      apiFetch(`/api/admin/syllabus-completion?subjectId=${sub}&chapterId=${ch}${un ? `&unitId=${un}` : ''}`)
+        .then(d => { if (!stale) setChapterSets(prev => ({ ...prev, [key]: new Set(d.completedIds || []) })) })
+        .catch(() => { if (!stale) setChapterSets(prev => ({ ...prev, [key]: 'error' })) })
+    }
+    return () => { stale = true }
+  }, [advConditions, chapterSets])
+
+  const subjectsById = useMemo(
+    () => new Map((subjects || []).map(s => [String(s._id), s])),
+    [subjects],
+  )
+  const filterCtx = { subjectsById, chapterSets }
+  const activeConditions = advConditions.filter(conditionComplete)
+  const advChecking = activeConditions.some(c =>
+    !conditionReady(c, filterCtx) && chapterSets[chapterConditionKey(c)] !== 'error')
+  const advCheckFailed = activeConditions.some(c =>
+    c.field === 'chapter' && chapterSets[chapterConditionKey(c)] === 'error')
+
+  // Enrollment + paper + advanced conditions narrow the pool; search and the
+  // status chips slice it. Chip counts come from the pool so typing a search
+  // doesn't change them.
+  const scoped = (students || []).filter(s => {
     if (enrolFilter === 'subjects' && !(s.caSubjects || []).length) return false
     if (enrolFilter === 'unset' && (s.caLevel || (s.caSubjects || []).length)) return false
     if (['group1', 'group2', 'both'].includes(enrolFilter) && s.caGroup !== enrolFilter) return false
-
     if (pickedSubject && !studiesSubject(s, pickedSubject)) return false
+    if (!advConditions.every(c => evalCondition(s, c, filterCtx))) return false
     return true
   })
+  const doneCount = completionReady ? scoped.filter(s => completion.ids.has(String(s._id))).length : 0
+
+  const filtered = scoped.filter(s => {
+    const q = search.trim().toLowerCase()
+    if (q && !((s.name || '').toLowerCase().includes(q) || (s.phoneNumber || '').includes(q))) return false
+    // Until the verdicts arrive the status chips don't hide anyone — better a
+    // beat of "everyone" than a flash of an empty roster.
+    if (chapFilter && statusFilter !== 'all' && completionReady) {
+      const done = completion.ids.has(String(s._id))
+      if (statusFilter === 'done' ? !done : done) return false
+    }
+    return true
+  })
+
+  // ── saved views (server-stored, shared by every admin) ──
+  // A view captures the WHOLE filter state: the quick controls above plus the
+  // advanced condition rows, so "G1 evening-slot, chapter 2 pending" is one click.
+  const currentFilters = () => ({
+    quick: { enrolFilter, subjFilter, chapFilter, unitFilter, statusFilter },
+    conditions: advConditions,
+  })
+  const applyView = (v) => {
+    const q = v.filters?.quick || {}
+    setEnrolFilter(q.enrolFilter || 'all')
+    setSubjFilter(q.subjFilter || '')
+    setChapFilter(q.chapFilter || '')
+    setUnitFilter(q.unitFilter || '')
+    setStatusFilter(q.statusFilter || 'all')
+    setAdvConditions(Array.isArray(v.filters?.conditions) ? v.filters.conditions.map(normalizeCondition) : [])
+    setActiveViewId(String(v._id))
+  }
+  const clearAllFilters = () => {
+    setEnrolFilter('all'); setSubjFilter(''); setChapFilter(''); setUnitFilter('')
+    setStatusFilter('all'); setAdvConditions([]); setActiveViewId('')
+  }
 
   const stagedCount = Object.values(staged).reduce((n, c) => n + c.ids.length, 0)
 
@@ -228,9 +340,12 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
   }
 
   // ── copy & paste a slot's roster ──
-  // Copy grabs everyone in a cell (saved class students + staged chips); paste
-  // stages them into another cell, skipping anyone already there. Nothing is
-  // booked until Review & save, same as a drag.
+  // Copy grabs everyone in a cell (saved class students + staged chips) AND the
+  // cell's mentor + subject, whether from the saved class or a staged config.
+  // The chapter is deliberately NOT copied — every slot teaches its own — so a
+  // paste into an empty cell opens the setup form pre-seeded with the mentor
+  // and subject, asking only for the chapter. Nothing is booked until
+  // Review & save, same as a drag.
 
   const copyCell = (day, slot, col) => {
     const cellId = `${dayKey(day)}/${slot.key}/${col.roomName}`
@@ -239,27 +354,54 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
       ...(existing?.allowedStudents || []).map(String),
       ...(staged[cellId]?.ids || []),
     ])].filter(id => byId.get(id))
-    if (!ids.length) return
-    setClipboard({ ids, from: `${col.roomLabel} ${col.trackLabel} · ${slot.name}` })
+    const src = existing
+      ? { hostUserId: existing.host?.userId, subjectId: existing.subject?.subjectId }
+      : newMeta[cellId] || {}
+    const meta = (src.hostUserId && src.subjectId)
+      ? { hostUserId: String(src.hostUserId), subjectId: String(src.subjectId) }
+      : null
+    if (!ids.length && !meta) return
+    setClipboard({ ids, meta, from: `${col.roomLabel} ${col.trackLabel} · ${slot.name}` })
   }
 
   const pasteCell = (day, slot, col) => {
-    if (!clipboard?.ids?.length) return
+    if (!clipboard?.ids?.length && !clipboard?.meta) return
     const cellId = `${dayKey(day)}/${slot.key}/${col.roomName}`
     const existing = cellClass(day, slot, col.roomName)
     const already = new Set((existing?.allowedStudents || []).map(String))
-    setStaged(prev => {
-      const cell = prev[cellId] || { day, slot, col, ids: [] }
-      const merged = [...cell.ids]
-      for (const id of clipboard.ids) {
-        if (already.has(id) || merged.includes(id)) continue
-        merged.push(id)
-      }
-      if (merged.length === cell.ids.length) return prev
-      return { ...prev, [cellId]: { ...cell, ids: merged } }
-    })
-    if (!existing && !cellMetaReady(cellId)) openSetup(day, slot, col)
+    if (clipboard.ids?.length) {
+      setStaged(prev => {
+        const cell = prev[cellId] || { day, slot, col, ids: [] }
+        const merged = [...cell.ids]
+        for (const id of clipboard.ids) {
+          if (already.has(id) || merged.includes(id)) continue
+          merged.push(id)
+        }
+        if (merged.length === cell.ids.length) return prev
+        return { ...prev, [cellId]: { ...cell, ids: merged } }
+      })
+    }
+    if (existing || cellMetaReady(cellId)) return
+    if (clipboard.meta) {
+      // Setup form, pre-seeded with the copied mentor + subject; the chapter is
+      // blank on purpose — the admin picks what THIS slot teaches. The form's
+      // own room-mentor lock still applies over the copied mentor.
+      setSetup({
+        cellId, day, slot, col,
+        hostUserId: clipboard.meta.hostUserId,
+        subjectId: clipboard.meta.subjectId,
+        chapterId: '', unitId: '',
+      })
+    } else {
+      openSetup(day, slot, col)
+    }
   }
+
+  // "3 students + mentor & subject" / "3 students" — for the pill and buttons.
+  const clipLabel = (clip) => [
+    clip.ids.length ? `${clip.ids.length} student${clip.ids.length > 1 ? 's' : ''}` : '',
+    clip.meta ? 'mentor & subject' : '',
+  ].filter(Boolean).join(' + ')
 
   const unstage = (cellId, id) => {
     setStaged(prev => {
@@ -419,7 +561,8 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
               ))}
             </div>
 
-            <select value={subjFilter} onChange={e => setSubjFilter(e.target.value)}
+            <select value={subjFilter}
+              onChange={e => { setSubjFilter(e.target.value); setChapFilter(''); setUnitFilter(''); setStatusFilter('all') }}
               className="w-full mt-2 px-2 py-1.5 text-xs border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-400 bg-white text-gray-600">
               <option value="">Any subject</option>
               {(subjects || []).map(s => (
@@ -429,8 +572,77 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
               ))}
             </select>
 
-            {(enrolFilter !== 'all' || subjFilter) && (
-              <button onClick={() => { setEnrolFilter('all'); setSubjFilter('') }}
+            {/* Drill into the picked paper: chapter → unit → done/pending. The ✓
+                prefixes are the cohort state (taught to every enrolled student);
+                the chips split the roster by each student's own completion. */}
+            {pickedSubject && (
+              <select value={chapFilter}
+                onChange={e => { setChapFilter(e.target.value); setUnitFilter(''); if (!e.target.value) setStatusFilter('all') }}
+                className="w-full mt-2 px-2 py-1.5 text-xs border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-400 bg-white text-gray-600">
+                <option value="">Any chapter</option>
+                {(pickedSubject.chapters || []).map(c => (
+                  <option key={c._id} value={String(c._id)}>{c.completed ? '✓ ' : ''}{c.name}</option>
+                ))}
+              </select>
+            )}
+            {pickedChapter && (pickedChapter.units || []).length > 0 && (
+              <select value={unitFilter} onChange={e => setUnitFilter(e.target.value)}
+                className="w-full mt-2 px-2 py-1.5 text-xs border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-400 bg-white text-gray-600">
+                <option value="">Whole chapter</option>
+                {pickedChapter.units.map(u => (
+                  <option key={u._id} value={String(u._id)}>{u.completed ? '✓ ' : ''}{u.name}</option>
+                ))}
+              </select>
+            )}
+            {pickedChapter && (
+              <>
+                <div className="flex gap-1 mt-2">
+                  {[
+                    ['all', 'All'],
+                    ['done', `✓ Done${completionReady ? ` (${doneCount})` : ''}`],
+                    ['pending', `Pending${completionReady ? ` (${scoped.length - doneCount})` : ''}`],
+                  ].map(([v, label]) => (
+                    <button key={v} onClick={() => setStatusFilter(v)}
+                      title={v === 'done' ? 'Students who have completed this chapter/unit'
+                        : v === 'pending' ? 'Students who still need this chapter/unit'
+                        : 'Everyone studying this paper'}
+                      className={`text-[10px] font-bold px-2 py-1 rounded-md transition-colors ${
+                        statusFilter === v
+                          ? v === 'pending' ? 'bg-amber-500 text-white'
+                            : v === 'done' ? 'bg-emerald-600 text-white'
+                            : 'bg-indigo-600 text-white'
+                          : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                {!completionReady && !completionError && (
+                  <p className="text-[10px] text-gray-400 mt-1">Checking completion…</p>
+                )}
+                {completionError && <p className="text-[10px] text-red-500 mt-1">{completionError}</p>}
+              </>
+            )}
+
+            <div className="flex items-center gap-2 mt-2">
+              <button onClick={() => setAdvOpen(true)}
+                title="Stack conditions on any field — joining date, last login, slot time, chapter completion…"
+                className={`text-[10px] font-bold px-2 py-1 rounded-md transition-colors ${
+                  activeConditions.length ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>
+                ⚙ Advanced{activeConditions.length ? ` · ${activeConditions.length}` : ''}
+              </button>
+              {activeViewId && (views || []).some(v => String(v._id) === activeViewId) && (
+                <span className="text-[10px] font-semibold text-indigo-500 truncate">
+                  {(views || []).find(v => String(v._id) === activeViewId)?.name}
+                </span>
+              )}
+            </div>
+            {advChecking && <p className="text-[10px] text-gray-400 mt-1">Checking chapter completion…</p>}
+            {advCheckFailed && (
+              <p className="text-[10px] text-red-500 mt-1">Some completion checks failed — those conditions are ignored.</p>
+            )}
+
+            {(enrolFilter !== 'all' || subjFilter || advConditions.length > 0) && (
+              <button onClick={clearAllFilters}
                 className="mt-2 text-[10px] font-semibold text-gray-400 hover:text-indigo-600">
                 Clear filters
               </button>
@@ -452,16 +664,37 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
                   setDragId(String(s._id))
                 }}
                 onDragEnd={() => { setDragId(null); setOverCell(null) }}
-                className={`px-2.5 py-2 rounded-lg cursor-grab active:cursor-grabbing select-none mb-0.5
+                className={`group px-2.5 py-2 rounded-lg cursor-grab active:cursor-grabbing select-none mb-0.5
                   border border-transparent hover:border-indigo-200 hover:bg-indigo-50
                   ${dragId === String(s._id) ? 'opacity-40' : ''}`}>
-                <p className="text-sm font-medium text-gray-800 truncate">{s.name || '—'}</p>
+                <div className="flex items-center gap-1">
+                  <p className="text-sm font-medium text-gray-800 truncate flex-1 min-w-0">{s.name || '—'}</p>
+                  {/* Preferred slot for the picked paper (or their default), and
+                      the editor to change it — admins re-set these any time. */}
+                  {effectiveSlot(s, subjFilter || null) && (
+                    <span className="text-[9px] font-bold text-sky-600 bg-sky-50 px-1.5 py-0.5 rounded flex-shrink-0"
+                      title="Preferred slot">
+                      🕐 {SLOT_SHORT[effectiveSlot(s, subjFilter || null)]}
+                    </span>
+                  )}
+                  <button onClick={e => { e.stopPropagation(); setSlotEditor(s) }}
+                    title="Set this student's slot times"
+                    className={`text-[10px] flex-shrink-0 px-1 rounded hover:bg-sky-100 ${
+                      (s.slotPreferences || []).length ? 'text-sky-500' : 'text-gray-300 opacity-0 group-hover:opacity-100'}`}>
+                    🕐
+                  </button>
+                </div>
                 <div className="flex items-center gap-1.5">
                   <p className="text-[11px] text-gray-400 truncate">{s.phoneNumber || s.email || ''}</p>
                   {enrollmentLabel(s) && (
                     <span className="text-[9px] font-bold text-indigo-500 bg-indigo-50 px-1.5 py-0.5 rounded flex-shrink-0">
                       {enrollmentLabel(s)}
                     </span>
+                  )}
+                  {chapFilter && completionReady && (
+                    completion.ids.has(String(s._id))
+                      ? <span className="text-[9px] font-bold text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded flex-shrink-0">✓ Done</span>
+                      : <span className="text-[9px] font-bold text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded flex-shrink-0">Pending</span>
                   )}
                 </div>
               </div>
@@ -472,7 +705,8 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
           </p>
         </div>
 
-        {/* ── Right: all 7 days, open ── */}
+        {/* ── Right: the schedule horizon — the next 7 days open, plus any
+            extra weeks the admin unfolded with "+ Add 7 more days" ── */}
         <div className="flex-1 min-w-0 space-y-3">
           {(rooms || []).length > 1 && (
             <div className="flex justify-end">
@@ -501,7 +735,8 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
               </div>
             </div>
           )}
-          {days.map(day => {
+          {weekChunks.map((weekDays, wi) => {
+            const renderDay = (day) => {
             const k = dayKey(day)
             const folded = !!collapsed[k]
             return (
@@ -561,18 +796,18 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
                                       <p className="text-[10px] text-gray-300 pt-3 text-center">slot over</p>
                                     ) : (
                                       <>
-                                        {/* copy the roster here / paste the copied one */}
+                                        {/* copy the roster + setup here / paste the copied one */}
                                         <div className="absolute top-1 right-1 flex gap-0.5">
-                                          {((cls?.allowedStudents || []).length + cellStaged.length) > 0 && (
+                                          {(cls || cellStaged.length > 0 || cfgReady) && (
                                             <button type="button" onClick={() => copyCell(day, slot, col)}
-                                              title="Copy this slot's students"
+                                              title="Copy this slot's students, mentor & subject (chapter is picked fresh on paste)"
                                               className="w-5 h-5 flex items-center justify-center rounded-md bg-white/90 border border-gray-200 text-gray-400 hover:text-indigo-600 hover:border-indigo-300 text-[11px] leading-none">
                                               ⧉
                                             </button>
                                           )}
                                           {clipboard && (
                                             <button type="button" onClick={() => pasteCell(day, slot, col)}
-                                              title={`Paste ${clipboard.ids.length} student${clipboard.ids.length > 1 ? 's' : ''} here`}
+                                              title={`Paste ${clipLabel(clipboard)} here`}
                                               className="w-5 h-5 flex items-center justify-center rounded-md bg-white/90 border border-amber-200 text-amber-500 hover:text-amber-700 hover:border-amber-400 text-[10px] leading-none">
                                               📋
                                             </button>
@@ -646,7 +881,7 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
                                             ) : clipboard ? (
                                               <button type="button" onClick={() => pasteCell(day, slot, col)}
                                                 className="text-[11px] text-amber-500 hover:text-amber-700 font-semibold w-full py-4 text-center border-2 border-dashed border-amber-200 rounded-lg mt-1">
-                                                📋 paste {clipboard.ids.length} student{clipboard.ids.length > 1 ? 's' : ''}
+                                                📋 paste {clipLabel(clipboard)}
                                               </button>
                                             ) : (
                                               // Configured cell: a roomy dashed target, so the drag
@@ -671,7 +906,55 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
                 )}
               </div>
             )
+            }
+
+            // The first 7 days stay bare, exactly as before. Every added block
+            // is a dropdown week card, so a long horizon folds out of the way.
+            if (wi === 0) return weekDays.map(renderDay)
+
+            const open = weekOpen[wi] !== false
+            const fmtD = (d) => d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
+            // Drops staged inside a folded week must stay visible, or they'd be
+            // forgotten — same rule the room switcher follows.
+            const weekKeys = new Set(weekDays.map(dayKey))
+            const stagedHere = Object.values(staged)
+              .filter(c => weekKeys.has(dayKey(c.day)))
+              .reduce((n, c) => n + c.ids.length, 0)
+            return (
+              <div key={`week-${wi}`} className="bg-white rounded-2xl shadow-sm overflow-hidden border border-indigo-100">
+                <button type="button" onClick={() => setWeekOpen(o => ({ ...o, [wi]: !open }))}
+                  className="w-full flex items-center justify-between px-4 py-3 hover:bg-indigo-50/40">
+                  <span className="text-sm font-bold text-indigo-900">
+                    📅 {fmtD(weekDays[0])} – {fmtD(weekDays[weekDays.length - 1])}
+                    <span className="ml-2 text-[10px] font-semibold text-indigo-400 uppercase">
+                      days {wi * 7 + 1}–{wi * 7 + weekDays.length}
+                    </span>
+                  </span>
+                  <span className="flex items-center gap-2">
+                    {!open && stagedHere > 0 && (
+                      <span className="text-[9px] font-bold bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded"
+                        title="Students staged in this week">
+                        {stagedHere}
+                      </span>
+                    )}
+                    <span className="text-gray-300 text-xs">{open ? '▾' : '▸'}</span>
+                  </span>
+                </button>
+                {open && (
+                  <div className="border-t border-indigo-100 bg-indigo-50/20 p-3 space-y-3">
+                    {weekDays.map(renderDay)}
+                  </div>
+                )}
+              </div>
+            )
           })}
+
+          {/* Scheduling isn't capped at 7 days — extend the horizon a week at a time. */}
+          <button type="button"
+            onClick={() => { setWeekOpen(o => ({ ...o, [weekCount]: true })); setWeekCount(weekCount + 1) }}
+            className="w-full py-3 rounded-2xl border-2 border-dashed border-indigo-200 text-indigo-500 text-sm font-semibold hover:bg-indigo-50 hover:border-indigo-300 transition-colors">
+            ＋ Add 7 more days
+          </button>
         </div>
       </div>
 
@@ -679,7 +962,7 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
       {clipboard && (
         <div className="fixed bottom-5 left-6 z-40 bg-white rounded-2xl shadow-xl border border-amber-200 px-4 py-3 flex items-center gap-3">
           <span className="text-xs text-gray-700">
-            ⧉ <b>{clipboard.ids.length}</b> student{clipboard.ids.length > 1 ? 's' : ''} copied
+            ⧉ <b>{clipLabel(clipboard)}</b> copied
             <span className="text-gray-400"> from {clipboard.from}</span> — click 📋 on any slot to paste
           </span>
           <button onClick={() => setClipboard(null)}
@@ -893,6 +1176,354 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
           </div>
         </div>
       )}
+
+      {/* ── Zoho-style advanced filter drawer ── */}
+      {advOpen && (
+        <AdvancedFilterPanel
+          conditions={advConditions} setConditions={setAdvConditions}
+          subjects={subjects}
+          views={views} setViews={setViews}
+          activeViewId={activeViewId} setActiveViewId={setActiveViewId}
+          currentFilters={currentFilters} onApplyView={applyView}
+          onClearAll={clearAllFilters}
+          matchCount={filtered.length}
+          onClose={() => setAdvOpen(false)}
+        />
+      )}
+
+      {/* ── Per-student slot time editor ── */}
+      {slotEditor && (
+        <SlotEditorModal
+          student={slotEditor} subjects={subjects}
+          onSaved={u => {
+            setStudents(list => (list || []).map(s => String(s._id) === String(u._id)
+              ? { ...s, slotPreferences: u.slotPreferences } : s))
+            setSlotEditor(null)
+          }}
+          onClose={() => setSlotEditor(null)}
+        />
+      )}
     </div>
   )
 }
+
+// ─────────────────────────── Advanced filter drawer ───────────────────────────
+// The Zoho-style condition builder: stack rows on any field (joining date, last
+// login, slot time, chapter completion, …), each with is/isn't-style operators;
+// rows apply live, ANDed with the quick filters above the roster. Saved views
+// live on the server and are shared by every admin.
+
+function AdvancedFilterPanel({
+  conditions, setConditions, subjects, views, setViews,
+  activeViewId, setActiveViewId, currentFilters, onApplyView, onClearAll,
+  matchCount, onClose,
+}) {
+  const [viewName, setViewName] = useState('')
+  const [busy, setBusy]         = useState(false)
+  const [error, setError]       = useState('')
+
+  const activeView = (views || []).find(v => String(v._id) === activeViewId) || null
+
+  const patchCondition = (id, patch) =>
+    setConditions(conditions.map(c => (c.id === id ? { ...c, ...patch } : c)))
+  const removeCondition = (id) => setConditions(conditions.filter(c => c.id !== id))
+
+  const saveAsNew = async () => {
+    const name = viewName.trim()
+    if (!name) { setError('Give the view a name first'); return }
+    setBusy(true); setError('')
+    try {
+      const d = await apiFetch('/api/admin/filter-views', {
+        method: 'POST',
+        body: JSON.stringify({ scope: 'scheduler-roster', name, filters: currentFilters() }),
+      })
+      setViews([...(views || []), d.view].sort((a, b) => a.name.localeCompare(b.name)))
+      setActiveViewId(String(d.view._id))
+      setViewName('')
+    } catch (err) {
+      setError(err.message || 'Could not save the view')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const updateActive = async () => {
+    if (!activeView) return
+    setBusy(true); setError('')
+    try {
+      const d = await apiFetch(`/api/admin/filter-views/${activeView._id}`, {
+        method: 'PUT',
+        body: JSON.stringify({ filters: currentFilters() }),
+      })
+      setViews((views || []).map(v => (String(v._id) === String(d.view._id) ? d.view : v)))
+      setActiveViewId(String(d.view._id))
+    } catch (err) {
+      setError(err.message || 'Could not update the view')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const deleteView = async (id) => {
+    if (!window.confirm('Delete this saved view for every admin?')) return
+    setBusy(true); setError('')
+    try {
+      await apiFetch(`/api/admin/filter-views/${id}`, { method: 'DELETE' })
+      setViews((views || []).filter(v => String(v._id) !== String(id)))
+      if (String(id) === activeViewId) setActiveViewId('')
+    } catch (err) {
+      setError(err.message || 'Could not delete the view')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <>
+      <div className="fixed inset-0 z-40 bg-black/20" onClick={onClose} />
+      <div className="fixed inset-y-0 left-0 z-50 w-[380px] max-w-full bg-white shadow-2xl flex flex-col">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100">
+          <div>
+            <h2 className="text-sm font-bold text-gray-900">Filter students</h2>
+            <p className="text-[11px] text-gray-400">{matchCount} match{matchCount === 1 ? 'es' : ''} · conditions apply live, all must hold</p>
+          </div>
+          <button onClick={onClose} className="text-gray-300 hover:text-gray-500 text-lg leading-none">✕</button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+          {/* Saved views */}
+          <div>
+            <p className="text-[10px] font-bold text-gray-400 uppercase mb-1.5">Saved views (shared)</p>
+            {views === null ? (
+              <p className="text-xs text-gray-400">Loading…</p>
+            ) : !views.length ? (
+              <p className="text-xs text-gray-400">None yet — build a filter below and save it.</p>
+            ) : (
+              <div className="space-y-1">
+                {views.map(v => (
+                  <div key={v._id}
+                    className={`flex items-center gap-2 px-2.5 py-1.5 rounded-lg border text-xs ${
+                      String(v._id) === activeViewId ? 'border-indigo-300 bg-indigo-50' : 'border-gray-100 hover:bg-gray-50'}`}>
+                    <button onClick={() => onApplyView(v)} className="flex-1 text-left font-semibold text-gray-700 truncate">
+                      {v.name}
+                    </button>
+                    {String(v._id) === activeViewId && (
+                      <button onClick={updateActive} disabled={busy}
+                        title="Overwrite this view with the current filters"
+                        className="text-[10px] font-bold text-indigo-500 hover:text-indigo-700">
+                        Update
+                      </button>
+                    )}
+                    <button onClick={() => deleteView(v._id)} disabled={busy}
+                      title="Delete for every admin"
+                      className="text-gray-300 hover:text-red-500">✕</button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="flex gap-1.5 mt-2">
+              <input value={viewName} onChange={e => setViewName(e.target.value)}
+                placeholder="Save current filters as…"
+                className="flex-1 min-w-0 px-2.5 py-1.5 text-xs border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-400" />
+              <button onClick={saveAsNew} disabled={busy}
+                className="px-3 py-1.5 text-xs font-semibold rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 disabled:bg-gray-300">
+                Save
+              </button>
+            </div>
+            {error && <p className="text-[11px] text-red-500 mt-1">{error}</p>}
+          </div>
+
+          {/* Condition rows */}
+          <div>
+            <p className="text-[10px] font-bold text-gray-400 uppercase mb-1.5">Conditions</p>
+            {!conditions.length && (
+              <p className="text-xs text-gray-400 mb-2">No conditions yet — add one below. The quick filters above the roster still apply.</p>
+            )}
+            <div className="space-y-2">
+              {conditions.map(c => (
+                <ConditionRow key={c.id} cond={c} subjects={subjects}
+                  onChange={patch => patchCondition(c.id, patch)}
+                  onRemove={() => removeCondition(c.id)} />
+              ))}
+            </div>
+            <button onClick={() => setConditions([...conditions, newCondition('name')])}
+              className="mt-2 text-xs font-semibold text-indigo-600 hover:text-indigo-800">
+              + Add condition
+            </button>
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between px-4 py-3 border-t border-gray-100">
+          <button onClick={() => { onClearAll(); setViewName('') }}
+            className="text-xs font-semibold text-gray-400 hover:text-red-500">
+            Clear all filters
+          </button>
+          <button onClick={onClose}
+            className="px-4 py-2 rounded-xl bg-indigo-600 text-white text-xs font-semibold hover:bg-indigo-700">
+            Done
+          </button>
+        </div>
+      </div>
+    </>
+  )
+}
+
+// One condition row: field → operator → value editor, the editor's shape driven
+// by the field's kind (see lib/rosterFilter.js). Changing the field resets the
+// row so a stale value can never leak across kinds.
+function ConditionRow({ cond, subjects, onChange, onRemove }) {
+  const def = fieldDef(cond.field)
+  if (!def) return null
+  const ops = opsFor(def)
+  const inputCls = 'px-2 py-1.5 text-xs border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-400 bg-white text-gray-700'
+
+  const chapterSubject = def.kind === 'chapter'
+    ? (subjects || []).find(s => String(s._id) === String(cond.value?.subjectId)) || null
+    : null
+  const chapterChapter = chapterSubject
+    ? (chapterSubject.chapters || []).find(c => String(c._id) === String(cond.value?.chapterId)) || null
+    : null
+
+  return (
+    <div className="border border-gray-100 rounded-xl p-2 bg-gray-50/50">
+      <div className="flex items-center gap-1.5">
+        <select value={cond.field}
+          onChange={e => onChange({ ...newCondition(e.target.value), id: cond.id })}
+          className={`${inputCls} flex-1 min-w-0`}>
+          {FIELD_DEFS.map(f => <option key={f.key} value={f.key}>{f.label}</option>)}
+        </select>
+        <select value={cond.op}
+          onChange={e => onChange({ op: e.target.value })}
+          className={`${inputCls} flex-1 min-w-0`}>
+          {ops.map(o => <option key={o.key} value={o.key}>{o.label}</option>)}
+        </select>
+        <button onClick={onRemove} className="text-gray-300 hover:text-red-500 flex-shrink-0 px-1">✕</button>
+      </div>
+
+      {/* value editor */}
+      <div className="mt-1.5">
+        {def.kind === 'text' && !['empty', 'not_empty'].includes(cond.op) && (
+          <input value={cond.value || ''} onChange={e => onChange({ value: e.target.value })}
+            placeholder={`${def.label}…`} className={`${inputCls} w-full`} />
+        )}
+
+        {def.kind === 'date' && cond.op === 'last' && (
+          <div className="flex items-center gap-1.5">
+            <input type="number" min="1" value={cond.value?.days || ''}
+              onChange={e => onChange({ value: { days: e.target.value } })}
+              className={`${inputCls} w-20`} />
+            <span className="text-xs text-gray-500">days</span>
+          </div>
+        )}
+        {def.kind === 'date' && ['before', 'after'].includes(cond.op) && (
+          <input type="date" value={cond.value?.date || ''}
+            onChange={e => onChange({ value: { date: e.target.value } })}
+            className={`${inputCls} w-full`} />
+        )}
+        {def.kind === 'date' && cond.op === 'between' && (
+          <div className="flex items-center gap-1.5">
+            <input type="date" value={cond.value?.from || ''}
+              onChange={e => onChange({ value: { ...cond.value, from: e.target.value } })}
+              className={`${inputCls} flex-1 min-w-0`} />
+            <span className="text-xs text-gray-400">–</span>
+            <input type="date" value={cond.value?.to || ''}
+              onChange={e => onChange({ value: { ...cond.value, to: e.target.value } })}
+              className={`${inputCls} flex-1 min-w-0`} />
+          </div>
+        )}
+
+        {def.kind === 'enum' && cond.op !== 'not_set' && (
+          <div className="flex flex-wrap gap-1">
+            {def.options.map(o => {
+              const on = (cond.value || []).includes(o.key)
+              return (
+                <button key={o.key}
+                  onClick={() => onChange({ value: on ? cond.value.filter(v => v !== o.key) : [...(cond.value || []), o.key] })}
+                  className={`text-[10px] font-bold px-2 py-1 rounded-md ${
+                    on ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>
+                  {o.label}
+                </button>
+              )
+            })}
+          </div>
+        )}
+
+        {def.kind === 'subject' && (() => {
+          const picked = subjectIdsOf(cond)
+          return (
+            <div className="space-y-1 max-h-44 overflow-y-auto pr-0.5">
+              {(subjects || []).map(s => {
+                const id = String(s._id)
+                const on = picked.includes(id)
+                return (
+                  <button key={id}
+                    onClick={() => onChange({ value: on ? picked.filter(v => v !== id) : [...picked, id] })}
+                    className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg border text-left text-xs ${
+                      on ? 'border-indigo-300 bg-indigo-50 text-indigo-800 font-medium' : 'border-gray-100 text-gray-600 hover:bg-gray-50'}`}>
+                    <span className={`w-3.5 h-3.5 rounded flex items-center justify-center text-[9px] font-bold flex-shrink-0 ${
+                      on ? 'bg-indigo-600 text-white' : 'border border-gray-300 text-transparent'}`}>✓</span>
+                    <span className="flex-1 truncate">{s.name}</span>
+                    <span className="text-[9px] text-gray-400 flex-shrink-0">
+                      {s.level}{s.group ? ` · ${s.group === 'group1' ? 'G1' : 'G2'}` : ''}
+                    </span>
+                  </button>
+                )
+              })}
+            </div>
+          )
+        })()}
+
+        {def.kind === 'slot' && (
+          <div className="space-y-1.5">
+            {cond.op !== 'not_set' && (
+              <select value={cond.value?.slot || ''}
+                onChange={e => onChange({ value: { ...cond.value, slot: e.target.value } })}
+                className={`${inputCls} w-full`}>
+                <option value="">Pick a slot…</option>
+                {SLOT_OPTIONS.map(o => <option key={o.key} value={o.key}>{o.label}</option>)}
+              </select>
+            )}
+            <select value={cond.value?.subjectId || ''}
+              onChange={e => onChange({ value: { ...cond.value, subjectId: e.target.value } })}
+              className={`${inputCls} w-full`}>
+              <option value="">For any paper</option>
+              {(subjects || []).map(s => <option key={s._id} value={String(s._id)}>For {s.name} ({s.level})</option>)}
+            </select>
+          </div>
+        )}
+
+        {def.kind === 'chapter' && (
+          <div className="space-y-1.5">
+            <select value={cond.value?.subjectId || ''}
+              onChange={e => onChange({ value: { subjectId: e.target.value, chapterId: '', unitId: '' } })}
+              className={`${inputCls} w-full`}>
+              <option value="">Subject…</option>
+              {(subjects || []).map(s => <option key={s._id} value={String(s._id)}>{s.name} ({s.level})</option>)}
+            </select>
+            <select value={cond.value?.chapterId || ''} disabled={!chapterSubject}
+              onChange={e => onChange({ value: { ...cond.value, chapterId: e.target.value, unitId: '' } })}
+              className={`${inputCls} w-full disabled:bg-gray-50 disabled:text-gray-400`}>
+              <option value="">{chapterSubject ? 'Chapter…' : 'Pick subject first'}</option>
+              {(chapterSubject?.chapters || []).map(c => (
+                <option key={c._id} value={String(c._id)}>{c.completed ? '✓ ' : ''}{c.name}</option>
+              ))}
+            </select>
+            {(chapterChapter?.units || []).length > 0 && (
+              <select value={cond.value?.unitId || ''}
+                onChange={e => onChange({ value: { ...cond.value, unitId: e.target.value } })}
+                className={`${inputCls} w-full`}>
+                <option value="">Whole chapter</option>
+                {chapterChapter.units.map(u => (
+                  <option key={u._id} value={String(u._id)}>{u.completed ? '✓ ' : ''}{u.name}</option>
+                ))}
+              </select>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// The slot time editor lives in components/SlotEditorModal.jsx — shared with
+// the Users page so both places edit the same thing the same way.

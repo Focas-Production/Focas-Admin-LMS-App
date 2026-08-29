@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { apiFetch } from '../../api'
-import { CA_LEVELS, CA_GROUPS, groupLabel } from '../../lib/ca'
+import { CA_LEVELS, CA_GROUPS, groupLabel, ATTEMPT_MONTHS, upcomingAttempts } from '../../lib/ca'
+import SlotEditorModal from '../../components/SlotEditorModal'
 
 function fmtDate(d) {
   if (!d) return '—'
@@ -352,6 +353,7 @@ function AiLimitModal({ user, onClose, onUpdated }) {
 function CourseModal({ user, onClose, onUpdated }) {
   const [level,   setLevel]   = useState(user.caLevel || '')
   const [group,   setGroup]   = useState(user.caGroup || '')
+  const [attempt, setAttempt] = useState(user.caAttempt || '')
   const [picked,  setPicked]  = useState(() => new Set((user.caSubjects || []).map(String)))
   const [mode,    setMode]    = useState((user.caSubjects || []).length ? 'subjects' : 'group')
   const [subjects, setSubjects] = useState(null)   // null = loading
@@ -370,6 +372,22 @@ function CourseModal({ user, onClose, onUpdated }) {
   // rather than an empty box the admin can't act on.
   const options = (subjects || []).filter(s => !level || s.level === level)
 
+  // Sittings this student could be targeting, per the level's ICAI calendar.
+  // A stored attempt that has slipped out of the rolling window (or into the
+  // past) stays listed so reopening the modal doesn't silently drop it.
+  const attemptOptions = (() => {
+    const opts = upcomingAttempts(level)
+    if (attempt && !opts.includes(attempt)) opts.unshift(attempt)
+    return opts
+  })()
+
+  // Switching level can invalidate the attempt (Final has no Jan/Sep sitting).
+  const pickLevel = (l) => {
+    const next = level === l ? '' : l
+    setLevel(next)
+    if (attempt && !(ATTEMPT_MONTHS[next] || []).includes(attempt.split(' ')[0])) setAttempt('')
+  }
+
   const togglePick = (id) => setPicked(prev => {
     const next = new Set(prev)
     if (next.has(id)) next.delete(id); else next.add(id)
@@ -385,6 +403,7 @@ function CourseModal({ user, onClose, onUpdated }) {
           caLevel: level || null,
           caGroup: bySubjects || !hasGroups ? null : (group || null),
           caSubjects: bySubjects ? [...picked] : [],
+          caAttempt: level ? (attempt || null) : null,
         }),
       })
       onUpdated?.()
@@ -436,29 +455,44 @@ function CourseModal({ user, onClose, onUpdated }) {
             <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Level</p>
             <div className="flex flex-wrap gap-2">
               {CA_LEVELS.map(l => (
-                <Choice key={l} active={level === l} onClick={() => setLevel(level === l ? '' : l)}>{l}</Choice>
+                <Choice key={l} active={level === l} onClick={() => pickLevel(l)}>{l}</Choice>
               ))}
             </div>
           </div>
 
-          <div>
-            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Enrolled for</p>
-            <div className="flex gap-2">
-              <Choice active={!bySubjects} onClick={() => setMode('group')}>Whole group</Choice>
-              <Choice active={bySubjects} onClick={() => setMode('subjects')}>Specific subjects</Choice>
-            </div>
-          </div>
-
-          {!bySubjects && hasGroups && (
+          {/* Which ICAI sitting they're preparing for — Jan/May/Sep sittings for
+              Foundation & Intermediate, May/Nov for Final. Optional. */}
+          {level && (
             <div>
-              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Group</p>
+              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Attempt</p>
               <div className="flex flex-wrap gap-2">
-                {CA_GROUPS.map(g => (
-                  <Choice key={g.value} active={group === g.value} onClick={() => setGroup(group === g.value ? '' : g.value)}>{g.label}</Choice>
+                {attemptOptions.map(a => (
+                  <Choice key={a} active={attempt === a} onClick={() => setAttempt(attempt === a ? '' : a)}>{a}</Choice>
                 ))}
               </div>
             </div>
           )}
+
+          {/* One selector for the scope: a group (open-ended — picks up papers
+              added to it later) or an explicit paper list. Same stored keys as
+              before (caGroup vs caSubjects); this only merges the two questions
+              into one row. */}
+          <div>
+            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Enrolled for</p>
+            <div className="flex flex-wrap gap-2">
+              {hasGroups ? (
+                CA_GROUPS.map(g => (
+                  <Choice key={g.value} active={!bySubjects && group === g.value}
+                    onClick={() => { setMode('group'); setGroup(!bySubjects && group === g.value ? '' : g.value) }}>
+                    {g.label}
+                  </Choice>
+                ))
+              ) : (
+                <Choice active={!bySubjects} onClick={() => setMode('group')}>Whole level</Choice>
+              )}
+              <Choice active={bySubjects} onClick={() => setMode('subjects')}>Specific subjects…</Choice>
+            </div>
+          </div>
 
           {bySubjects && (
             <div>
@@ -833,9 +867,9 @@ function UserDetailDrawer({ user, onClose }) {
             {!user.isAdmin && !user.isMentor && (
               <Row label="Enrolled for">
                 {user.caSubjects?.length > 0
-                  ? `${user.caLevel ? `${user.caLevel} · ` : ''}${user.caSubjects.length} specific subject${user.caSubjects.length !== 1 ? 's' : ''}`
+                  ? `${user.caLevel ? `${user.caLevel} · ` : ''}${user.caSubjects.length} specific subject${user.caSubjects.length !== 1 ? 's' : ''}${user.caAttempt ? ` · ${user.caAttempt}` : ''}`
                   : user.caLevel
-                    ? `${user.caLevel}${user.caGroup ? ` · ${groupLabel(user.caGroup)}` : ''}`
+                    ? `${user.caLevel}${user.caGroup ? ` · ${groupLabel(user.caGroup)}` : ''}${user.caAttempt ? ` · ${user.caAttempt}` : ''}`
                     : <span className="text-gray-400">Not set</span>}
               </Row>
             )}
@@ -1077,6 +1111,7 @@ export default function UsersPage() {
   const [detailUser,   setDetailUser]   = useState(null)
   const [syllabusMentor, setSyllabusMentor] = useState(null)
   const [courseUser,     setCourseUser]     = useState(null)
+  const [slotUser,       setSlotUser]       = useState(null)
 
   function load() {
     setLoading(true)
@@ -1173,6 +1208,7 @@ export default function UsersPage() {
                         {u.caSubjects?.length > 0
                           ? `${u.caLevel ? ' · ' : ''}${u.caSubjects.length} subject${u.caSubjects.length !== 1 ? 's' : ''}`
                           : u.caGroup ? ` · ${groupLabel(u.caGroup)}` : ''}
+                        {u.caAttempt ? ` · ${u.caAttempt}` : ''}
                       </span>
                     )}
                   </td>
@@ -1214,6 +1250,19 @@ export default function UsersPage() {
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
                           </svg>
                           Course
+                        </button>
+                        <button onClick={() => setSlotUser(u)}
+                          title={(u.slotPreferences || []).length
+                            ? 'Change which class slot suits this student, per subject'
+                            : 'No slot times set yet — pick which class slot suits this student, per subject'}
+                          className={`flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg transition-colors whitespace-nowrap ${
+                            (u.slotPreferences || []).length
+                              ? 'text-sky-600 bg-sky-50 hover:bg-sky-100'
+                              : 'text-gray-400 bg-gray-50 hover:bg-sky-50 hover:text-sky-600'}`}>
+                          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                          </svg>
+                          Slot
                         </button>
                         <button onClick={() => navigate(`/admin/users/${u._id}/progress`)}
                           title="Full progress report — syllabus, attendance, test marks, lectures"
@@ -1331,6 +1380,14 @@ export default function UsersPage() {
           user={courseUser}
           onClose={() => setCourseUser(null)}
           onUpdated={load}
+        />
+      )}
+
+      {slotUser && (
+        <SlotEditorModal
+          student={slotUser}
+          onSaved={() => { setSlotUser(null); load() }}
+          onClose={() => setSlotUser(null)}
         />
       )}
     </div>

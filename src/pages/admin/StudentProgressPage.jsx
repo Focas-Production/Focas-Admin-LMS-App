@@ -328,7 +328,11 @@ function SubjectCard({ subject, query, defaultOpen }) {
       {expanded && (
         <div className="px-4 pb-4 space-y-3">
           {!chapters.length ? (
-            <p className="text-xs text-gray-400 py-2">Nothing matches this search in {subject.name}.</p>
+            <p className="text-xs text-gray-400 py-2">
+              {subject.chapters.length
+                ? `Nothing matches this search in ${subject.name}.`
+                : 'No chapters have been added to this subject yet.'}
+            </p>
           ) : chapters.map(ch => {
             // A chapter with no units is a single row that already carries its
             // own name — repeating it as a heading would just be noise.
