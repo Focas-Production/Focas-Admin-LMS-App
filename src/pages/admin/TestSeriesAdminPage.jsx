@@ -55,44 +55,61 @@ const mentorKey = (s) => (s.mentorId ? String(s.mentorId) : 'unassigned')
 function SubmissionsView({ showToast }) {
   const [status, setStatus] = useState('')
   const [mentorFilter, setMentorFilter] = useState('')   // '' | mentorId | 'unassigned'
+  const [dateFrom, setDateFrom] = useState('')           // YYYY-MM-DD (submission date)
+  const [dateTo, setDateTo] = useState('')               // YYYY-MM-DD
   const [rows, setRows] = useState(null)
   const [mentors, setMentors] = useState([])
   const [stats, setStats] = useState(null)               // per-mentor workload
   const [totals, setTotals] = useState(null)
+  const [counts, setCounts] = useState(null)             // status totals for mentor+date filter
   const [page, setPage] = useState(1)
   const [limit, setLimit] = useState(20)
   const [total, setTotal] = useState(0)
   const [totalPages, setTotalPages] = useState(1)
   const [detailId, setDetailId] = useState(null)   // submission opened in the detail modal
 
-  const load = (st = status, pg = page, lim = limit, mid = mentorFilter) => {
+  // Local calendar days → ISO instants, so "2 Sep" means 2 Sep in the admin's timezone.
+  const applyDateParams = (params) => {
+    if (dateFrom) params.set('dateFrom', new Date(`${dateFrom}T00:00:00`).toISOString())
+    if (dateTo)   params.set('dateTo',   new Date(`${dateTo}T23:59:59.999`).toISOString())
+  }
+
+  const load = () => {
     setRows(null)
-    const params = new URLSearchParams({ page: pg, limit: lim })
-    if (st) params.set('status', st)
-    if (mid) params.set('mentorId', mid)
+    const params = new URLSearchParams({ page, limit })
+    if (status) params.set('status', status)
+    if (mentorFilter) params.set('mentorId', mentorFilter)
+    applyDateParams(params)
     apiFetch(`/api/admin/test-submissions?${params.toString()}`)
       .then(d => {
         setRows(d.submissions || [])
         setTotal(d.total || 0)
         setTotalPages(d.totalPages || 1)
+        setCounts(d.statusCounts || null)
       })
-      .catch(() => { setRows([]); setTotal(0); setTotalPages(1) })
+      .catch(() => { setRows([]); setTotal(0); setTotalPages(1); setCounts(null) })
   }
   const loadStats = () => {
-    apiFetch('/api/admin/test-submissions/stats')
+    const params = new URLSearchParams()
+    applyDateParams(params)
+    const qs = params.toString()
+    apiFetch(`/api/admin/test-submissions/stats${qs ? `?${qs}` : ''}`)
       .then(d => { setStats(d.stats || []); setTotals(d.totals || null) })
       .catch(() => { setStats([]); setTotals(null) })
   }
-  useEffect(() => { load(status, page, limit, mentorFilter) }, [status, page, limit, mentorFilter])
+  useEffect(() => { load() }, [status, page, limit, mentorFilter, dateFrom, dateTo])
+  useEffect(() => { loadStats() }, [dateFrom, dateTo])
   useEffect(() => {
-    loadStats()
     apiFetch('/api/admin/mentors').then(d => setMentors(d.mentors || [])).catch(() => {})
   }, [])
 
   // Reset to page 1 when a filter or the page size changes
-  const onStatus = (v) => { setStatus(v); setPage(1) }
-  const onLimit  = (v) => { setLimit(v); setPage(1) }
-  const onMentor = (v) => { setMentorFilter(v); setPage(1) }
+  const onStatus   = (v) => { setStatus(v); setPage(1) }
+  const onLimit    = (v) => { setLimit(v); setPage(1) }
+  const onMentor   = (v) => { setMentorFilter(v); setPage(1) }
+  const onDateFrom = (v) => { setDateFrom(v); setPage(1) }
+  const onDateTo   = (v) => { setDateTo(v); setPage(1) }
+  const clearDates = () => { setDateFrom(''); setDateTo(''); setPage(1) }
 
   const assign = async (id, mentorId) => {
     if (!mentorId) return
@@ -101,7 +118,7 @@ function SubmissionsView({ showToast }) {
         method: 'PUT', body: JSON.stringify({ mentorId }),
       })
       showToast('Assigned to mentor')
-      load(status, page, limit, mentorFilter)
+      load()
       loadStats()
     } catch (e) { showToast(e.message) }
   }
@@ -126,6 +143,29 @@ function SubmissionsView({ showToast }) {
       </div>
       <p className="text-xs text-gray-400 mb-4">Read-only overview. Assign a pending paper to a mentor manually, or let it sit in the pool for self-claim.</p>
 
+      {/* Date filter (by submission date) */}
+      <div className="flex flex-wrap items-end gap-2 mb-4">
+        <div>
+          <label className="block text-[11px] font-semibold text-gray-500 mb-1">From date</label>
+          <input type="date" value={dateFrom} max={dateTo || undefined} onChange={e => onDateFrom(e.target.value)}
+            className="px-2.5 py-1.5 text-xs border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-400" />
+        </div>
+        <div>
+          <label className="block text-[11px] font-semibold text-gray-500 mb-1">To date</label>
+          <input type="date" value={dateTo} min={dateFrom || undefined} onChange={e => onDateTo(e.target.value)}
+            className="px-2.5 py-1.5 text-xs border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-400" />
+        </div>
+        {(dateFrom || dateTo) && (
+          <button onClick={clearDates}
+            className="px-3 py-1.5 rounded-lg text-xs font-semibold border border-gray-200 text-gray-500 hover:text-gray-800 hover:bg-gray-50">
+            ✕ Clear dates
+          </button>
+        )}
+      </div>
+
+      {/* Corrected vs pending totals — follows the mentor + date filters (not the status tab) */}
+      {counts && <TotalsBar counts={counts} />}
+
       {stats !== null && stats.length > 0 && (
         <MentorFilter stats={stats} totals={totals} value={mentorFilter} onChange={onMentor}
           status={status} onStatus={onStatus} />
@@ -136,7 +176,8 @@ function SubmissionsView({ showToast }) {
       ) : !rows.length ? (
         <p className="text-sm text-gray-500">
           No submissions{status ? ` with status "${status}"` : ''}
-          {selected ? ` for ${mentorLabel(selected)}` : ''} yet.
+          {selected ? ` for ${mentorLabel(selected)}` : ''}
+          {dateFrom || dateTo ? ' in the selected date range' : ''} yet.
         </p>
       ) : (
         <div className="overflow-x-auto">
@@ -223,6 +264,28 @@ function SubmissionsView({ showToast }) {
 
       {detailId && <SubmissionDetailModal id={detailId} onClose={() => setDetailId(null)} />}
     </section>
+  )
+}
+
+// ───────────────────────── totals bar (corrected vs pending) ─────────────────────────
+function TotalsBar({ counts }) {
+  const incomplete = (counts.pending || 0) + (counts.assigned || 0)
+  const tiles = [
+    ['Total papers', counts.total || 0,     'text-gray-900',    null],
+    ['Corrected',    counts.completed || 0, 'text-emerald-600', null],
+    ['Pending',      incomplete,            'text-amber-600',
+      `${counts.pending || 0} in pool · ${counts.assigned || 0} in progress`],
+  ]
+  return (
+    <div className="grid grid-cols-3 gap-2 mb-4">
+      {tiles.map(([label, n, color, sub]) => (
+        <div key={label} className="px-3 py-2.5 rounded-xl border border-gray-200 bg-gray-50/70">
+          <span className={`block text-xl font-bold leading-none ${color}`}>{n}</span>
+          <span className="block text-[11px] text-gray-500 mt-1">{label}</span>
+          {sub && <span className="block text-[10px] text-gray-400 mt-0.5">{sub}</span>}
+        </div>
+      ))}
+    </div>
   )
 }
 
