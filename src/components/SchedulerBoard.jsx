@@ -20,12 +20,14 @@ import SlotEditorModal from './SlotEditorModal'
 // One "Review & save" at the end confirms everything in a single modal: new
 // classes get a title + host there, and every change is committed together.
 //
-// The four slots are fixed school periods, not free-form times:
+// The four slots are fixed school periods, not free-form times. Names mirror
+// SLOT_OPTIONS in lib/rosterFilter.js — the name is the time range, and it is
+// what the default class title ends with ("… — 6–9 AM Slot").
 const SLOTS = [
-  { key: 'm1', icon: '🌅', name: 'Morning Slot 1', startHour: 6,  endHour: 9  },
-  { key: 'm2', icon: '☀️', name: 'Morning Slot 2', startHour: 10, endHour: 13 },
-  { key: 'af', icon: '🌤️', name: 'Afternoon Slot', startHour: 14, endHour: 17 },
-  { key: 'ev', icon: '🌙', name: 'Evening Slot',   startHour: 19, endHour: 22 },
+  { key: 'm1', icon: '🌅', name: '6–9 AM Slot',     startHour: 6,  endHour: 9  },
+  { key: 'm2', icon: '☀️', name: '10 AM–1 PM Slot', startHour: 10, endHour: 13 },
+  { key: 'af', icon: '🌤️', name: '2–5 PM Slot',     startHour: 14, endHour: 17 },
+  { key: 'ev', icon: '🌙', name: '7–10 PM Slot',    startHour: 19, endHour: 22 },
 ]
 
 const fmtHour = (h) => {
@@ -107,6 +109,7 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
   const [setup, setSetup]       = useState(null)   // cell being configured: { cellId, day, slot, col, hostUserId, subjectId, chapterId, unitId }
   const [saving, setSaving]     = useState(false)
   const [error, setError]       = useState('')
+  const [notice, setNotice]     = useState(null)   // { text, undo } — double-booking toast, auto-dismissed
 
   const [subjects, setSubjects] = useState([])   // subject → chapters → units tree
 
@@ -371,6 +374,77 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
     setSetup(null)
   }
 
+  // ── double-booking inside a room ──
+  // A student can sit in only ONE track of a room per slot — both tracks run
+  // in the same space with the same mentor at the same time, so putting the
+  // same student in Track 1 and Track 2 books them twice. The drop still
+  // lands (the admin may be mid-move), but it is flagged at once: a toast with
+  // Undo, a red chip in the grid, and a banner in Review & save.
+
+  // The sibling tracks (same room, other track, same day/slot) where this
+  // student is already on the saved class or staged.
+  const roomClashesFor = (day, slot, col, id) => {
+    const sid = String(id)
+    const out = []
+    for (const sib of trackCols) {
+      if (sib.roomKey !== col.roomKey || sib.roomName === col.roomName) continue
+      const cls = cellClass(day, slot, sib.roomName)
+      const saved = !!cls && (cls.allowedStudents || []).map(String).includes(sid)
+      const parked = (staged[`${dayKey(day)}/${slot.key}/${sib.roomName}`]?.ids || []).includes(sid)
+      if (saved || parked) out.push({ trackLabel: sib.trackLabel, saved })
+    }
+    return out
+  }
+
+  // Every staged (cell, student) pair that clashes with a sibling track.
+  // `byChip` ("cellId|studentId" → sibling tracks) marks the chips; `groups`
+  // folds a clash down to one line per (day, slot, room, student) for the
+  // banners, since every clash touches at least two cells.
+  const clashes = (() => {
+    const byChip = new Map()
+    const groups = new Map()
+    const trackOrder = (label) => trackCols.findIndex(c => c.trackLabel === label)
+    for (const [cellId, cell] of Object.entries(staged)) {
+      for (const id of cell.ids) {
+        const others = roomClashesFor(cell.day, cell.slot, cell.col, id)
+        if (!others.length) continue
+        byChip.set(`${cellId}|${id}`, others)
+        const gk = `${dayKey(cell.day)}/${cell.slot.key}/${cell.col.roomKey}|${id}`
+        const g = groups.get(gk) || { day: cell.day, slot: cell.slot, roomLabel: cell.col.roomLabel, id, tracks: new Set() }
+        g.tracks.add(cell.col.trackLabel)
+        for (const o of others) g.tracks.add(o.trackLabel)
+        groups.set(gk, g)
+      }
+    }
+    return {
+      byChip,
+      groups: [...groups.values()].map(g => ({
+        ...g, tracks: [...g.tracks].sort((a, b) => trackOrder(a) - trackOrder(b)),
+      })),
+    }
+  })()
+
+  // The toast fired at the drop/paste that caused a clash: who, which sibling
+  // track, and a one-click Undo that lifts them back out of THIS cell.
+  const warnRoomClashes = (day, slot, col, ids) => {
+    const hits = ids
+      .map(id => ({ id, others: roomClashesFor(day, slot, col, id) }))
+      .filter(h => h.others.length)
+    if (!hits.length) return
+    const cellId = `${dayKey(day)}/${slot.key}/${col.roomName}`
+    const tracks = [...new Set(hits.flatMap(h => h.others.map(o => o.trackLabel)))].join(' & ')
+    setNotice({
+      text: `${hits.map(h => chipName(h.id)).join(', ')} ${hits.length > 1 ? 'are' : 'is'} already in ${col.roomLabel} · ${tracks} for ${whenLabel(day, slot)} — a student can attend only one track of a room.`,
+      undo: () => hits.forEach(h => unstage(cellId, h.id)),
+    })
+  }
+
+  useEffect(() => {
+    if (!notice) return
+    const t = setTimeout(() => setNotice(null), 9000)
+    return () => clearTimeout(t)
+  }, [notice])
+
   // ── staging ──
 
   const stageDrop = (day, slot, col, studentId) => {
@@ -381,11 +455,14 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
     const existing = cellClass(day, slot, col.roomName)
     // Already allotted on the saved class, or already staged → nothing to do.
     if (existing && (existing.allowedStudents || []).map(String).includes(id)) return
+    const alreadyStaged = (staged[cellId]?.ids || []).includes(id)
     setStaged(prev => {
       const cell = prev[cellId] || { day, slot, col, ids: [] }
       if (cell.ids.includes(id)) return prev
       return { ...prev, [cellId]: { ...cell, ids: [...cell.ids, id] } }
     })
+    // A fresh drop into a second track of this room → say so right away.
+    if (!alreadyStaged) warnRoomClashes(day, slot, col, [id])
     // Dropped into a cell that hasn't been set up yet → ask for mentor and
     // chapter right away instead of waiting for Review & save to complain.
     if (!existing && !cellMetaReady(cellId)) openSetup(day, slot, col)
@@ -422,16 +499,17 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
     const existing = cellClass(day, slot, col.roomName)
     const already = new Set((existing?.allowedStudents || []).map(String))
     if (clipboard.ids?.length) {
-      setStaged(prev => {
-        const cell = prev[cellId] || { day, slot, col, ids: [] }
-        const merged = [...cell.ids]
-        for (const id of clipboard.ids) {
-          if (already.has(id) || merged.includes(id)) continue
-          merged.push(id)
-        }
-        if (merged.length === cell.ids.length) return prev
-        return { ...prev, [cellId]: { ...cell, ids: merged } }
-      })
+      const cur = staged[cellId]?.ids || []
+      const toAdd = clipboard.ids.filter(id => !already.has(id) && !cur.includes(id))
+      if (toAdd.length) {
+        setStaged(prev => {
+          const cell = prev[cellId] || { day, slot, col, ids: [] }
+          const merged = [...cell.ids]
+          for (const id of toAdd) if (!merged.includes(id)) merged.push(id)
+          return { ...prev, [cellId]: { ...cell, ids: merged } }
+        })
+        warnRoomClashes(day, slot, col, toAdd)
+      }
     }
     if (existing || cellMetaReady(cellId)) return
     if (clipboard.meta) {
@@ -579,8 +657,10 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
     else setReview(false)
   }
 
+  const whenLabel = (day, slot) =>
+    `${day.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' })} · ${slot.name}`
   const cellLabel = (cell) =>
-    `${cell.day.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' })} · ${cell.slot.name} · ${cell.col.roomLabel} ${cell.col.trackLabel}`
+    `${whenLabel(cell.day, cell.slot)} · ${cell.col.roomLabel} ${cell.col.trackLabel}`
 
   const chipName = (id) => byId.get(String(id))?.name || byId.get(String(id))?.phoneNumber || '…'
 
@@ -828,13 +908,16 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
                               // whether to book them anyway is the admin's call.
                               const dragged = dragId ? byId.get(dragId) : null
                               const offSlot = !!dragged && !past && !isAvailableFor(dragged, day, slot.key)
+                              // Dropping here would put them in a second track
+                              // of this room for the slot → the target goes red.
+                              const clashDrop = !!dragged && !past && roomClashesFor(day, slot, col, dragId).length > 0
                               return (
                                 <td key={col.roomName} className="align-top"
                                   onDragOver={e => { if (past) return; e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; setOverCell(cellId) }}
                                   onDragLeave={() => setOverCell(o => (o === cellId ? null : o))}
                                   onDrop={e => { if (past) return; e.preventDefault(); stageDrop(day, slot, col, e.dataTransfer.getData('text/plain')) }}>
                                   <div className={`relative rounded-xl border p-1.5 transition-colors ${cfgReady ? 'min-h-[92px]' : 'min-h-[52px]'}
-                                    ${hovered ? (offSlot ? 'border-amber-400 bg-amber-50' : 'border-indigo-400 bg-indigo-50')
+                                    ${hovered ? (clashDrop ? 'border-red-400 bg-red-50' : offSlot ? 'border-amber-400 bg-amber-50' : 'border-indigo-400 bg-indigo-50')
                                       : cellStaged.length ? 'border-amber-300 bg-amber-50/60'
                                       : cls ? 'border-gray-200 bg-gray-50'
                                       : past ? 'border-gray-100 bg-gray-50/50'
@@ -899,28 +982,44 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
                                           )
                                         })()}
                                         <div className="flex flex-wrap gap-1">
-                                          {(cls?.allowedStudents || []).map(id => (
-                                            <span key={String(id)}
-                                              className="inline-flex items-center gap-0.5 text-[10px] bg-indigo-100 text-indigo-700 px-1.5 py-0.5 rounded-md">
-                                              {chipName(id)}
-                                              <button type="button" onClick={() => removeSaved(cls, id)}
-                                                className="text-indigo-400 hover:text-indigo-800 font-bold leading-none">×</button>
-                                            </span>
-                                          ))}
+                                          {(cls?.allowedStudents || []).map(id => {
+                                            // Saved students are checked too, so an old
+                                            // double booking (or a staged sibling drop)
+                                            // shows up on both chips, not just the new one.
+                                            const dup = roomClashesFor(day, slot, col, id)
+                                            const dupTitle = dup.length
+                                              ? `Also in ${dup.map(d => d.trackLabel).join(' & ')} of ${col.roomLabel} in this slot — a student can attend only one track`
+                                              : undefined
+                                            return (
+                                              <span key={String(id)} title={dupTitle}
+                                                className={`inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded-md ${
+                                                  dup.length ? 'bg-red-100 text-red-800 border border-red-300' : 'bg-indigo-100 text-indigo-700'}`}>
+                                                {dup.length > 0 && <span className="text-red-600">⚠</span>}{chipName(id)}
+                                                <button type="button" onClick={() => removeSaved(cls, id)}
+                                                  className={`font-bold leading-none ${dup.length ? 'text-red-400 hover:text-red-900' : 'text-indigo-400 hover:text-indigo-800'}`}>×</button>
+                                              </span>
+                                            )
+                                          })}
                                           {cls && !(cls.allowedStudents || []).length && !cellStaged.length && (
                                             <span className="text-[10px] text-gray-400 italic">open to all</span>
                                           )}
                                           {cellStaged.map(id => {
-                                            // ⚠ marks a student parked outside their slot availability.
+                                            // ⚠ marks a student parked outside their slot
+                                            // availability (amber) or booked into a sibling
+                                            // track of this room for the same slot (red).
                                             const st = byId.get(id)
                                             const off = !!st && !isAvailableFor(st, day, slot.key)
+                                            const dup = clashes.byChip.get(`${cellId}|${id}`) || []
+                                            const title = dup.length
+                                              ? `Also in ${dup.map(d => d.trackLabel).join(' & ')} of ${col.roomLabel} in this slot — a student can attend only one track`
+                                              : off ? "Outside this student's slot availability" : undefined
                                             return (
-                                              <span key={id}
-                                                title={off ? "Outside this student's slot availability" : undefined}
-                                                className="inline-flex items-center gap-0.5 text-[10px] bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded-md border border-amber-200">
-                                                {off && <span className="text-red-500">⚠</span>}{chipName(id)}
+                                              <span key={id} title={title}
+                                                className={`inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded-md border ${
+                                                  dup.length ? 'bg-red-100 text-red-800 border-red-300' : 'bg-amber-100 text-amber-800 border-amber-200'}`}>
+                                                {(off || dup.length > 0) && <span className={dup.length ? 'text-red-600' : 'text-red-500'}>⚠</span>}{chipName(id)}
                                                 <button type="button" onClick={() => unstage(cellId, id)}
-                                                  className="text-amber-500 hover:text-amber-900 font-bold leading-none">×</button>
+                                                  className={`font-bold leading-none ${dup.length ? 'text-red-400 hover:text-red-900' : 'text-amber-500 hover:text-amber-900'}`}>×</button>
                                               </span>
                                             )
                                           })}
@@ -1026,13 +1125,38 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
         </div>
       )}
 
+      {/* ── Double-booking notice — fires at the drop/paste that caused it ── */}
+      {notice && (
+        <div role="alert"
+          className="fixed top-4 right-4 z-50 max-w-md bg-white rounded-2xl shadow-xl border border-red-200 px-4 py-3 flex items-start gap-3">
+          <span className="text-red-500 text-base leading-none pt-0.5">⚠</span>
+          <p className="text-xs text-red-800 flex-1 leading-snug">{notice.text}</p>
+          <div className="flex items-center gap-1.5 flex-shrink-0">
+            {notice.undo && (
+              <button type="button" onClick={() => { notice.undo(); setNotice(null) }}
+                className="px-2.5 py-1 rounded-lg bg-red-600 text-white text-[11px] font-semibold hover:bg-red-700">
+                Undo
+              </button>
+            )}
+            <button type="button" onClick={() => setNotice(null)}
+              className="text-gray-300 hover:text-gray-500 text-sm leading-none px-1">✕</button>
+          </div>
+        </div>
+      )}
+
       {/* ── Floating action bar — appears once anything is staged ── */}
       {stagedCount > 0 && !review && (
         <div className="fixed bottom-5 right-6 z-40 bg-white rounded-2xl shadow-xl border border-gray-100 px-4 py-3 flex items-center gap-3">
           <span className="text-sm text-gray-700">
             <b>{stagedCount}</b> student{stagedCount > 1 ? 's' : ''} staged in <b>{Object.keys(staged).length}</b> slot{Object.keys(staged).length > 1 ? 's' : ''}
           </span>
-          <button onClick={() => setStaged({})}
+          {clashes.groups.length > 0 && (
+            <span className="text-xs font-bold text-red-600 bg-red-50 border border-red-200 px-2 py-1 rounded-lg"
+              title={clashes.groups.map(g => `${chipName(g.id)} · ${whenLabel(g.day, g.slot)} · ${g.roomLabel} ${g.tracks.join(' & ')}`).join('\n')}>
+              ⚠ {clashes.groups.length} in two tracks of one room
+            </span>
+          )}
+          <button onClick={() => { setStaged({}); setNotice(null) }}
             className="px-3 py-1.5 rounded-xl border border-gray-200 text-gray-500 text-xs font-semibold hover:bg-gray-50">
             Discard
           </button>
@@ -1137,6 +1261,26 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
               {stagedCount} student{stagedCount > 1 ? 's' : ''} across {Object.keys(staged).length} slot{Object.keys(staged).length > 1 ? 's' : ''} — nothing is booked until you confirm.
             </p>
 
+            {/* Same student, two tracks of one room, same slot — listed up top
+                so it can't be missed, with the cells below carrying the detail. */}
+            {clashes.groups.length > 0 && (
+              <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-3 py-2.5">
+                <p className="text-xs font-bold text-red-700 mb-1">
+                  ⚠ {clashes.groups.length} student{clashes.groups.length > 1 ? 's' : ''} booked into two tracks of the same room
+                </p>
+                <ul className="text-[11px] text-red-700 space-y-0.5">
+                  {clashes.groups.map((g, i) => (
+                    <li key={i}>
+                      <b>{chipName(g.id)}</b> · {whenLabel(g.day, g.slot)} · {g.roomLabel} {g.tracks.join(' & ')}
+                    </li>
+                  ))}
+                </ul>
+                <p className="text-[10px] text-red-600 mt-1.5">
+                  A student can attend only one track of a room. Go Back and remove them from one track (×), or confirm anyway.
+                </p>
+              </div>
+            )}
+
             <div className="space-y-3">
               {Object.entries(staged).map(([cellId, cell]) => {
                 const existing = cellClass(cell.day, cell.slot, cell.col.roomName)
@@ -1149,6 +1293,16 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
                     <p className="text-[11px] text-gray-500 mb-2">
                       {cell.ids.map(chipName).join(', ')}
                     </p>
+                    {(() => {
+                      const dup = cell.ids.filter(id => clashes.byChip.has(`${cellId}|${id}`))
+                      if (!dup.length) return null
+                      const tracks = [...new Set(dup.flatMap(id => clashes.byChip.get(`${cellId}|${id}`).map(d => d.trackLabel)))]
+                      return (
+                        <p className="text-[10px] text-red-600 mb-2">
+                          ⚠ Also in {cell.col.roomLabel} · {tracks.join(' & ')} this slot: {dup.map(chipName).join(', ')} — one student, one track.
+                        </p>
+                      )
+                    })()}
                     {(() => {
                       const off = cell.ids.filter(id => {
                         const st = byId.get(id)

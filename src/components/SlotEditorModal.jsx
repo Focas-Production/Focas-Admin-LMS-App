@@ -99,7 +99,6 @@ export default function SlotEditorModal({ student, onSaved, onClose }) {
               <tr key={o.key} className="border-t border-gray-100">
                 <td className="py-2 pr-2">
                   <p className="text-xs font-semibold text-gray-700">{o.num}. {o.name}</p>
-                  <p className="text-[10px] text-gray-400">{o.time}</p>
                 </td>
                 {DAY_TYPES.map(dt => {
                   const on = enabled(dt.key) && has(dt.key, o.key)

@@ -34,13 +34,14 @@ const ATTEMPT_OPTIONS = [...new Set([...upcomingAttempts('Intermediate'), ...upc
 
 // The scheduler's four fixed periods, numbered 1–4 the way the tutoring sheet
 // writes them ("Weekdays 1,4"). Keys mirror SLOTS in SchedulerBoard and the
-// User model's enum; the order here is the day's order.
+// User model's enum; the order here is the day's order. Names are the time
+// range itself so a class title reads "Room 1 · Track 1 — 6–9 AM Slot".
 export const SLOT_OPTIONS = [
-  { key: 'm1', num: 1, name: 'Morning Slot 1', time: '6–9 AM' },
-  { key: 'm2', num: 2, name: 'Morning Slot 2', time: '10 AM–1 PM' },
-  { key: 'af', num: 3, name: 'Afternoon Slot', time: '2–5 PM' },
-  { key: 'ev', num: 4, name: 'Evening Slot',   time: '7–10 PM' },
-].map(o => ({ ...o, label: `Slot ${o.num} · ${o.name} (${o.time})` }))
+  { key: 'm1', num: 1, name: '6–9 AM Slot' },
+  { key: 'm2', num: 2, name: '10 AM–1 PM Slot' },
+  { key: 'af', num: 3, name: '2–5 PM Slot' },
+  { key: 'ev', num: 4, name: '7–10 PM Slot' },
+].map(o => ({ ...o, label: `Slot ${o.num} · ${o.name}` }))
 export const SLOT_KEYS = SLOT_OPTIONS.map(o => o.key)
 export const SLOT_NUM = Object.fromEntries(SLOT_OPTIONS.map(o => [o.key, o.num]))
 
