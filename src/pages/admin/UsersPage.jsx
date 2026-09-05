@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import { apiFetch } from '../../api'
 import { CA_LEVELS, CA_GROUPS, groupLabel, ATTEMPT_MONTHS, upcomingAttempts } from '../../lib/ca'
 import SlotEditorModal from '../../components/SlotEditorModal'
+import { availabilityLabel, hasSlotAvailability } from '../../lib/rosterFilter'
 
 function fmtDate(d) {
   if (!d) return '—'
@@ -1251,18 +1252,20 @@ export default function UsersPage() {
                           </svg>
                           Course
                         </button>
+                        {/* Slot availability: which of the 4 slots, on weekdays /
+                            weekends — the button wears the summary once set. */}
                         <button onClick={() => setSlotUser(u)}
-                          title={(u.slotPreferences || []).length
-                            ? 'Change which class slot suits this student, per subject'
-                            : 'No slot times set yet — pick which class slot suits this student, per subject'}
+                          title={hasSlotAvailability(u)
+                            ? `Slot availability: ${availabilityLabel(u)} — change which slots and days suit this student`
+                            : 'No slot availability set yet — pick which of the four slots suit this student, on weekdays and weekends'}
                           className={`flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg transition-colors whitespace-nowrap ${
-                            (u.slotPreferences || []).length
+                            hasSlotAvailability(u)
                               ? 'text-sky-600 bg-sky-50 hover:bg-sky-100'
                               : 'text-gray-400 bg-gray-50 hover:bg-sky-50 hover:text-sky-600'}`}>
                           <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
                           </svg>
-                          Slot
+                          {hasSlotAvailability(u) ? availabilityLabel(u) : 'Slot'}
                         </button>
                         <button onClick={() => navigate(`/admin/users/${u._id}/progress`)}
                           title="Full progress report — syllabus, attendance, test marks, lectures"

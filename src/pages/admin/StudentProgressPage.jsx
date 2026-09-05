@@ -253,17 +253,56 @@ const SUBJECT_FILTERS = [
   { key: 'not-started', label: 'Not started' },
 ]
 
+// Every chapter/topic row sits on one ladder the server computes from live-class
+// attendance: not-allotted → allotted → attended → completed. These chips slice
+// the rows by rung; the subject chips slice by paper.
+const STATUS_FILTERS = [
+  { key: 'all',          label: 'All topics',   tone: 'indigo' },
+  { key: 'not-allotted', label: 'Not allotted', tone: 'gray' },
+  { key: 'allotted',     label: 'Allotted',     tone: 'indigo' },
+  { key: 'attended',     label: 'Attended',     tone: 'amber' },
+  { key: 'completed',    label: 'Completed',    tone: 'emerald' },
+]
+const STATUS_META = {
+  'not-allotted': { label: 'Not allotted', tone: 'gray' },
+  allotted:       { label: 'Allotted',     tone: 'indigo' },
+  attended:       { label: 'Attended',     tone: 'amber' },
+  completed:      { label: '✓ Done',       tone: 'emerald' },
+}
+
+// One badge per rung. Under "allotted", pendingKind says whether the class is
+// running now or already went by without the student — both worth their own
+// word. Works for a row (pendingKind) and a rolled-up chapter (liveNow /
+// missedSessions / nextClassAt).
+function statusBadge(x) {
+  if (x.status === 'allotted') {
+    const live = x.pendingKind === 'live' || x.liveNow
+    const missed = x.pendingKind === 'missed' || (x.pendingKind == null && x.missedSessions > 0 && !x.nextClassAt)
+    if (live) return { label: 'Live now', tone: 'rose' }
+    if (missed) return { label: 'Missed', tone: 'rose' }
+  }
+  return STATUS_META[x.status] || STATUS_META['not-allotted']
+}
+
+const rowMatches = (row, filter) => filter === 'all' || row.status === filter
+
 // Why an item is still open. The distinction matters: "mentor still teaching"
-// is nobody's fault, "attendance short" is the student's to fix.
+// is nobody's fault, "attendance short" is the student's to fix, and the rest
+// say where the next class stands.
 function reasonLabel(row) {
   if (row.completed) return null
   if (row.reason === 'teaching')   return { text: 'mentor still teaching', cls: 'text-amber-600' }
   if (row.reason === 'attendance') return { text: 'attendance short', cls: 'text-rose-500' }
+  if (row.pendingKind === 'live')  return { text: row.joinedLive ? 'in the live class now' : 'class live now, not joined', cls: 'text-rose-500' }
+  if (row.pendingKind === 'upcoming') return { text: `next class ${fmtDay(row.nextClassAt)}, ${fmtTime(row.nextClassAt)}`, cls: 'text-indigo-600' }
+  if (row.pendingKind === 'missed')   return { text: `missed ${row.missedSessions} class${row.missedSessions !== 1 ? 'es' : ''}`, cls: 'text-rose-500' }
+  if (row.pendingKind === 'not-allotted') return { text: 'no class scheduled yet', cls: 'text-gray-400' }
   return null
 }
 
 function ItemRow({ row }) {
   const reason = reasonLabel(row)
+  const badge = statusBadge(row)
   return (
     <div className="flex items-center gap-3 px-3 py-2 bg-gray-50 rounded-lg">
       <div className="flex-1 min-w-0">
@@ -271,35 +310,44 @@ function ItemRow({ row }) {
         <p className="text-[11px] text-gray-400 mt-0.5">
           {row.sessions
             ? `${row.sessions} session${row.sessions !== 1 ? 's' : ''} · ${row.percent}% attended`
-            : 'No class held yet'}
+            : `${row.allottedClasses || 0} class${row.allottedClasses === 1 ? '' : 'es'} allotted`}
           {reason && <span className={reason.cls}> · {reason.text}</span>}
+          {row.nextClassAt && row.pendingKind !== 'upcoming' && (
+            <span className="text-indigo-600"> · next class {fmtDay(row.nextClassAt)}</span>
+          )}
         </p>
       </div>
-      <Badge tone={row.completed ? 'emerald' : 'gray'}
-        title={row.source === 'manual' ? `Edited by ${row.markedByName || 'mentor'}` : 'Auto-computed from attendance'}>
-        {row.completed ? '✓ Done' : 'Not done'}{row.source === 'manual' && <span className="ml-0.5 opacity-60">✎</span>}
+      <Badge tone={badge.tone}
+        title={row.source === 'manual' ? `Edited by ${row.markedByName || 'mentor'}`
+          : row.source === 'chapter' ? 'Completed with the whole chapter'
+          : 'Auto-computed from attendance'}>
+        {badge.label}{row.source === 'manual' && <span className="ml-0.5 opacity-60">✎</span>}
       </Badge>
     </div>
   )
 }
 
-function SubjectCard({ subject, query, defaultOpen }) {
+function SubjectCard({ subject, query, rowFilter = 'all', defaultOpen }) {
   const [open, setOpen] = useState(defaultOpen)
 
   const q = query.trim().toLowerCase()
-  // A live search forces every card open — collapsed matches would look like
-  // no match at all.
-  const expanded = q ? true : open
-  const chapters = q
-    ? subject.chapters
-        .map(ch => ch.name.toLowerCase().includes(q)
-          ? ch
-          : { ...ch, rows: ch.rows.filter(r => (r.unitName || '').toLowerCase().includes(q)) })
-        .filter(ch => ch.rows.length)
-    : subject.chapters
+  // A live search or a status filter forces every card open — collapsed
+  // matches would look like no match at all.
+  const expanded = (q || rowFilter !== 'all') ? true : open
+  // Search narrows by name (a matching chapter keeps every topic); the status
+  // chips then narrow by rung. A chapter with nothing left disappears.
+  const chapters = subject.chapters
+    .map(ch => {
+      const rows = (q && !ch.name.toLowerCase().includes(q))
+        ? ch.rows.filter(r => (r.unitName || '').toLowerCase().includes(q))
+        : ch.rows
+      return { ...ch, rows: rows.filter(r => rowMatches(r, rowFilter)) }
+    })
+    .filter(ch => ch.rows.length)
 
   const tone = subject.status === 'completed' ? 'emerald' : toneFor(subject.percent)
   const pending = subject.totalItems - subject.completedItems
+  const counts = subject.chapterStatusCounts || {}
 
   return (
     <div className="border border-gray-100 rounded-xl overflow-hidden">
@@ -319,6 +367,9 @@ function SubjectCard({ subject, query, defaultOpen }) {
               {subject.completedChapters}/{subject.totalChapters} chapters ·{' '}
               {subject.completedItems}/{subject.totalItems} topics ·{' '}
               {subject.sessions} session{subject.sessions !== 1 ? 's' : ''}
+              {counts.allotted > 0 && <span className="text-indigo-600"> · {counts.allotted} allotted</span>}
+              {counts.attended > 0 && <span className="text-amber-600"> · {counts.attended} attended</span>}
+              {counts['not-allotted'] > 0 && <span> · {counts['not-allotted']} not allotted</span>}
             </span>
           </div>
         </div>
@@ -330,18 +381,20 @@ function SubjectCard({ subject, query, defaultOpen }) {
           {!chapters.length ? (
             <p className="text-xs text-gray-400 py-2">
               {subject.chapters.length
-                ? `Nothing matches this search in ${subject.name}.`
+                ? `Nothing matches the current filter in ${subject.name}.`
                 : 'No chapters have been added to this subject yet.'}
             </p>
           ) : chapters.map(ch => {
             // A chapter with no units is a single row that already carries its
-            // own name — repeating it as a heading would just be noise.
+            // own name and badge — repeating them as a heading would be noise.
             const single = ch.rows.length === 1 && !ch.rows[0].unitName
+            const chBadge = statusBadge(ch)
             return (
               <div key={ch.chapterId}>
                 {!single && (
                   <div className="flex items-center gap-2 mb-1.5 pl-1">
                     <p className="text-[11px] font-semibold text-gray-500 uppercase tracking-wide truncate">{ch.name}</p>
+                    <Badge tone={chBadge.tone}>{chBadge.label}</Badge>
                     <Bar percent={ch.percent} tone={ch.completed ? 'emerald' : toneFor(ch.percent)} className="flex-1 max-w-[120px]" />
                     <span className="text-[10px] text-gray-400 flex-shrink-0">{ch.done}/{ch.total}</span>
                   </div>
@@ -360,28 +413,34 @@ function SubjectCard({ subject, query, defaultOpen }) {
 
 function SyllabusSection({ syllabus, thresholdPercent }) {
   const [filter, setFilter] = useState('all')
+  const [rowFilter, setRowFilter] = useState('all')
   const [query, setQuery] = useState('')
 
   const q = query.trim().toLowerCase()
   const visible = syllabus.subjects.filter(s =>
     (filter === 'all' || s.status === filter) &&
+    (rowFilter === 'all' || s.chapters.some(ch => ch.rows.some(r => rowMatches(r, rowFilter)))) &&
     (!q || s.name.toLowerCase().includes(q) ||
       s.chapters.some(ch => ch.name.toLowerCase().includes(q) || ch.rows.some(r => (r.unitName || '').toLowerCase().includes(q)))))
 
   const counts = SUBJECT_FILTERS.reduce((a, f) => ({
     ...a, [f.key]: f.key === 'all' ? syllabus.subjects.length : syllabus.subjects.filter(s => s.status === f.key).length,
   }), {})
+  const chapterCounts = syllabus.chapterStatusCounts || {}
+  const statusCount = (key) => (key === 'all' ? syllabus.totalItems : (syllabus.itemStatusCounts?.[key] ?? 0))
 
   return (
     <Section id="subjects" index={1} title="Subject-wise progress"
       subtitle={thresholdPercent != null
-        ? `A topic counts as completed once the mentor has taught it and this student attended ≥${thresholdPercent}% of its sessions.`
+        ? `Each chapter moves not allotted → allotted → attended → completed. A topic counts as completed once the mentor has taught it and this student attended ≥${thresholdPercent}% of its sessions.`
         : undefined}>
       <Tallies items={[
         { label: 'Subjects done',  value: `${syllabus.completedSubjects}/${syllabus.totalSubjects}`, tone: 'emerald' },
         { label: 'Chapters done',  value: `${syllabus.completedChapters}/${syllabus.totalChapters}`, tone: 'emerald' },
         { label: 'Topics done',    value: `${syllabus.completedItems}/${syllabus.totalItems}`,       tone: 'emerald' },
-        { label: 'Chapters left',  value: syllabus.totalChapters - syllabus.completedChapters,       tone: 'amber' },
+        { label: 'Attended, not done', value: chapterCounts.attended ?? 0,                            tone: 'amber' },
+        { label: 'Allotted, not attended', value: chapterCounts.allotted ?? 0,                        tone: 'indigo' },
+        { label: 'Not allotted',   value: chapterCounts['not-allotted'] ?? 0,                        tone: 'gray' },
         { label: 'Topics left',    value: syllabus.totalItems - syllabus.completedItems,             tone: 'amber' },
       ]} />
 
@@ -397,15 +456,25 @@ function SyllabusSection({ syllabus, thresholdPercent }) {
         <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search subject, chapter or topic…"
           className={`${inputCls} ml-auto w-56`} />
       </div>
+      {/* Where each topic stands on the ladder — the filter to find "allotted
+          but never attended" for this student. */}
+      <div className="flex items-center gap-1 px-5 py-2 border-b border-gray-100 flex-wrap">
+        <span className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide mr-1">Status</span>
+        {STATUS_FILTERS.map(f => (
+          <Chip key={f.key} active={rowFilter === f.key} onClick={() => setRowFilter(f.key)} tone={f.tone}>
+            {f.label} {statusCount(f.key)}
+          </Chip>
+        ))}
+      </div>
 
       <div className="p-4 space-y-2">
         {!syllabus.subjects.length ? (
           <Empty title="Nothing to show yet"
-            hint="This student has no enrolled level and hasn't attended a class tied to a chapter." />
+            hint="This student has no enrolled level and hasn't attended or been allotted a class tied to a chapter." />
         ) : !visible.length ? (
           <Empty title="No match" hint="Nothing here matches the current filter." />
         ) : visible.map(s => (
-          <SubjectCard key={s.subjectId} subject={s} query={query} defaultOpen={visible.length <= 3} />
+          <SubjectCard key={s.subjectId} subject={s} query={query} rowFilter={rowFilter} defaultOpen={visible.length <= 3} />
         ))}
       </div>
     </Section>

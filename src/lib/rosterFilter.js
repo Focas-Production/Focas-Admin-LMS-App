@@ -7,14 +7,15 @@
 //   date    → { days } | { date } | { from, to }        (per operator)
 //   enum    → array of option keys
 //   subject → array of subjectId strings (any/all/none of them)
-//   slot    → { slot, subjectId }   subjectId '' = any paper / their default
-//   chapter → { subjectId, chapterId, unitId }
+//   slot    → { slot, days }        days '' = on any day | 'weekdays' | 'weekends'
+//   chapter → { subjectId, chapterId, unitId }   (the operator names the status)
 //
-// Everything here is pure: the async part (who completed a chapter — the
-// /api/admin/syllabus-completion sets) arrives via ctx.chapterSets, keyed by
-// chapterConditionKey(). A chapter condition whose set hasn't landed yet is
-// "not ready" and must not hide anyone — the board keeps students visible and
-// shows a "checking…" note instead.
+// Everything here is pure: the async part (where every student stands on a
+// chapter — the /api/admin/syllabus-completion buckets, { done, attended,
+// allotted } sets) arrives via ctx.chapterSets, keyed by chapterConditionKey().
+// A chapter condition whose buckets haven't landed yet is "not ready" and must
+// not hide anyone — the board keeps students visible and shows a "checking…"
+// note instead.
 
 import { upcomingAttempts } from './ca'
 
@@ -31,13 +32,61 @@ const ATTEMPT_OPTIONS = [...new Set([...upcomingAttempts('Intermediate'), ...upc
   })
   .map(a => ({ key: a, label: a }))
 
+// The scheduler's four fixed periods, numbered 1–4 the way the tutoring sheet
+// writes them ("Weekdays 1,4"). Keys mirror SLOTS in SchedulerBoard and the
+// User model's enum; the order here is the day's order.
 export const SLOT_OPTIONS = [
-  { key: 'm1', label: 'Morning Slot 1 (6–9 AM)' },
-  { key: 'm2', label: 'Morning Slot 2 (10 AM–1 PM)' },
-  { key: 'af', label: 'Afternoon Slot (2–5 PM)' },
-  { key: 'ev', label: 'Evening Slot (7–10 PM)' },
+  { key: 'm1', num: 1, name: 'Morning Slot 1', time: '6–9 AM' },
+  { key: 'm2', num: 2, name: 'Morning Slot 2', time: '10 AM–1 PM' },
+  { key: 'af', num: 3, name: 'Afternoon Slot', time: '2–5 PM' },
+  { key: 'ev', num: 4, name: 'Evening Slot',   time: '7–10 PM' },
+].map(o => ({ ...o, label: `Slot ${o.num} · ${o.name} (${o.time})` }))
+export const SLOT_KEYS = SLOT_OPTIONS.map(o => o.key)
+export const SLOT_NUM = Object.fromEntries(SLOT_OPTIONS.map(o => [o.key, o.num]))
+
+// Availability is kept per day type — Mon–Fri and Sat–Sun — because a student
+// comes on weekdays only, weekends only, or all seven days.
+export const DAY_TYPES = [
+  { key: 'weekdays', label: 'Weekdays', long: 'Weekdays (Mon–Fri)', short: 'Wkdy' },
+  { key: 'weekends', label: 'Weekends', long: 'Weekends (Sat–Sun)', short: 'Wknd' },
 ]
-export const SLOT_SHORT = { m1: 'Mor 1', m2: 'Mor 2', af: 'Aft', ev: 'Eve' }
+export const dayTypeOf = (date) => {
+  const d = new Date(date).getDay()
+  return d === 0 || d === 6 ? 'weekends' : 'weekdays'
+}
+
+// The slots this student can attend on one day type, in slot order.
+export function availableSlots(student, dayType) {
+  const list = student?.slotAvailability?.[dayType] || []
+  return SLOT_KEYS.filter(k => list.includes(k))
+}
+export const hasSlotAvailability = (student) =>
+  availableSlots(student, 'weekdays').length > 0 || availableSlots(student, 'weekends').length > 0
+
+// Can this student attend `slotKey` on `date`? Availability nobody has set
+// yet is "unknown" rather than "no" — true — so the scheduler only fades cells
+// when it actually knows better.
+export function isAvailableFor(student, date, slotKey) {
+  if (!hasSlotAvailability(student)) return true
+  return availableSlots(student, dayTypeOf(date)).includes(slotKey)
+}
+
+// Which days the student comes on: 'weekdays' | 'weekends' | 'both' | null.
+export function classDaysOf(student) {
+  const wd = availableSlots(student, 'weekdays').length > 0
+  const we = availableSlots(student, 'weekends').length > 0
+  return wd && we ? 'both' : wd ? 'weekdays' : we ? 'weekends' : null
+}
+
+// Compact "All days 1,4" / "Wkdy 1,4 · Wknd 2" for chips and tooltips; null
+// when nothing is set.
+export function availabilityLabel(student) {
+  const nums = (dayType) => availableSlots(student, dayType).map(k => SLOT_NUM[k]).join(',')
+  const wd = nums('weekdays'), we = nums('weekends')
+  if (!wd && !we) return null
+  if (wd === we) return `All days ${wd}`
+  return [wd && `Wkdy ${wd}`, we && `Wknd ${we}`].filter(Boolean).join(' · ')
+}
 
 // Does this student's enrollment cover this paper? Mirrors the server's scoping
 // (utils/studentSyllabus.js subjectInScope): an explicit paper list is exact,
@@ -49,18 +98,6 @@ export function studiesSubject(student, subject) {
   if (!student.caLevel || student.caLevel !== subject.level) return false
   if (!student.caGroup || student.caGroup === 'both') return true
   return !subject.group || subject.group === student.caGroup
-}
-
-// The slot that applies to this student for one paper: their subject-specific
-// row wins, else their default (subjectId null) row, else nothing.
-export function effectiveSlot(student, subjectId) {
-  const prefs = student.slotPreferences || []
-  if (subjectId) {
-    const specific = prefs.find(p => p.subjectId && String(p.subjectId) === String(subjectId))
-    if (specific) return specific.slot
-  }
-  const def = prefs.find(p => !p.subjectId)
-  return def ? def.slot : null
 }
 
 const TEXT_OPS = [
@@ -110,9 +147,25 @@ export const FIELD_DEFS = [
       { key: 'all',  label: 'includes all of' },
       { key: 'none', label: 'includes none of' },
     ] },
-  { key: 'slot',       label: 'Slot time',       kind: 'slot',    ops: ENUM_OPS },
-  { key: 'chapter',    label: 'Chapter completion', kind: 'chapter',
-    ops: [{ key: 'done', label: 'completed' }, { key: 'not_done', label: 'not completed' }] },
+  { key: 'slot',       label: 'Slot availability', kind: 'slot',  ops: ENUM_OPS },
+  { key: 'classDays',  label: 'Class days',      kind: 'enum',
+    options: [{ key: 'weekdays', label: 'Weekdays only' }, { key: 'weekends', label: 'Weekends only' }, { key: 'both', label: 'All 7 days' }],
+    get: classDaysOf },
+  // One operator per rung of the per-student ladder the Progress pages show
+  // (not allotted → allotted → attended → completed), plus the "at least"
+  // supersets a scheduler actually asks for ("who still needs a class", "who
+  // has sat one"). 'done' / 'not_done' are the original two, kept so saved
+  // views keep working.
+  { key: 'chapter',    label: 'Chapter status', kind: 'chapter',
+    ops: [
+      { key: 'not_done',      label: 'is not completed (any of the below)' },
+      { key: 'not_allotted',  label: 'is not allotted — no class yet' },
+      { key: 'allotted',      label: 'is allotted, not attended' },
+      { key: 'attended',      label: 'is attended, not completed' },
+      { key: 'done',          label: 'is completed' },
+      { key: 'allotted_plus', label: 'has a class (allotted, attended or completed)' },
+      { key: 'attended_plus', label: 'has attended (attended or completed)' },
+    ] },
   { key: 'source',     label: 'Source',          kind: 'enum',
     options: [{ key: 'shopify', label: 'Shopify' }, { key: 'website', label: 'Website' }, { key: 'combo', label: 'Combo' }, { key: 'custom', label: 'Added by admin' }],
     get: s => s.source },
@@ -130,7 +183,7 @@ export function newCondition(fieldKey = 'name') {
     field: fieldKey,
     op: ops[0]?.key || 'is',
     value: def.kind === 'enum' || def.kind === 'subject' ? []
-      : def.kind === 'slot' ? { slot: '', subjectId: '' }
+      : def.kind === 'slot' ? { slot: '', days: '' }
       : def.kind === 'chapter' ? { subjectId: '', chapterId: '', unitId: '' }
       : def.kind === 'date' ? {}
       : '',
@@ -143,8 +196,12 @@ const SUBJECT_OP_ALIAS = { studies: 'any', not_studies: 'none' }
 export const subjectIdsOf = (c) =>
   Array.isArray(c.value) ? c.value : c.value ? [String(c.value)] : []
 export function normalizeCondition(c) {
-  if (fieldDef(c.field)?.kind !== 'subject') return c
-  return { ...c, op: SUBJECT_OP_ALIAS[c.op] || c.op, value: subjectIdsOf(c) }
+  const kind = fieldDef(c.field)?.kind
+  if (kind === 'subject') return { ...c, op: SUBJECT_OP_ALIAS[c.op] || c.op, value: subjectIdsOf(c) }
+  // Slot rows saved while availability was per paper carried a subjectId;
+  // nothing is per paper any more, so they become "that slot, on any day".
+  if (kind === 'slot') return { ...c, value: { slot: c.value?.slot || '', days: c.value?.days || '' } }
+  return c
 }
 
 export const chapterConditionKey = (c) =>
@@ -176,10 +233,23 @@ export function conditionComplete(c) {
   }
 }
 
-// Chapter rows also need their completion set fetched before they may filter.
+// The fetched buckets for one chapter/unit: exclusive rungs, as the server
+// sends them. Anyone in none of the three is not allotted.
+export const isChapterBuckets = (b) =>
+  !!b && b.done instanceof Set && b.attended instanceof Set && b.allotted instanceof Set
+
+export function chapterStatusOf(student, buckets) {
+  const id = String(student._id)
+  return buckets.done.has(id) ? 'done'
+    : buckets.attended.has(id) ? 'attended'
+    : buckets.allotted.has(id) ? 'allotted'
+    : 'not_allotted'
+}
+
+// Chapter rows also need their buckets fetched before they may filter.
 export function conditionReady(c, ctx) {
   if (fieldDef(c.field)?.kind !== 'chapter') return true
-  return ctx.chapterSets?.[chapterConditionKey(c)] instanceof Set
+  return isChapterBuckets(ctx.chapterSets?.[chapterConditionKey(c)])
 }
 
 const dayStart = (ymd) => {
@@ -217,7 +287,8 @@ function evalText(raw, c) {
   }
 }
 
-// ctx: { subjectsById: Map(id → subject doc), chapterSets: { key → Set(userId) } }
+// ctx: { subjectsById: Map(id → subject doc),
+//        chapterSets: { key → { done, attended, allotted: Set(userId) } | 'error' } }
 // Incomplete rows pass everyone (see conditionComplete); not-ready chapter rows
 // are the caller's job to surface — here they also pass everyone.
 export function evalCondition(student, c, ctx) {
@@ -242,20 +313,26 @@ export function evalCondition(student, c, ctx) {
         : hits === 0
     }
     case 'slot': {
-      const subjectId = c.value?.subjectId || ''
-      if (c.op === 'not_set') {
-        return subjectId ? !effectiveSlot(student, subjectId) : !(student.slotPreferences || []).length
-      }
-      const match = subjectId
-        ? effectiveSlot(student, subjectId) === c.value.slot
-        : (student.slotPreferences || []).some(p => p.slot === c.value.slot)
+      // days '' = either day type counts; otherwise only the picked one.
+      const types = c.value?.days ? [c.value.days] : DAY_TYPES.map(d => d.key)
+      if (c.op === 'not_set') return types.every(t => !availableSlots(student, t).length)
+      const match = types.some(t => availableSlots(student, t).includes(c.value.slot))
       return c.op === 'is' ? match : !match
     }
     case 'chapter': {
-      const set = ctx.chapterSets?.[chapterConditionKey(c)]
-      if (!(set instanceof Set)) return true   // still loading / errored — don't hide anyone
-      const done = set.has(String(student._id))
-      return c.op === 'done' ? done : !done
+      const buckets = ctx.chapterSets?.[chapterConditionKey(c)]
+      if (!isChapterBuckets(buckets)) return true   // still loading / errored — don't hide anyone
+      const st = chapterStatusOf(student, buckets)
+      switch (c.op) {
+        case 'done':          return st === 'done'
+        case 'not_done':      return st !== 'done'
+        case 'attended':      return st === 'attended'
+        case 'allotted':      return st === 'allotted'
+        case 'not_allotted':  return st === 'not_allotted'
+        case 'attended_plus': return st === 'attended' || st === 'done'
+        case 'allotted_plus': return st !== 'not_allotted'
+        default:              return true
+      }
     }
     default: return true
   }

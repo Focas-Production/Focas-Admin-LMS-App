@@ -487,7 +487,7 @@ export default function LiveClassesPage() {
       {allot && (
         <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4"
           onClick={() => !allot.saving && setAllot(null)}>
-          <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg p-5" onClick={e => e.stopPropagation()}>
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg p-5 max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
             <h2 className="text-base font-bold text-gray-900 mb-0.5">Who can join</h2>
             <p className="text-xs text-gray-400 mb-4 truncate">{allot.cls.title}</p>
 
@@ -496,6 +496,11 @@ export default function LiveClassesPage() {
             ) : (
               <>
                 <StudentPicker
+                  selected={allot.students}
+                  onChange={(students) => setAllot(a => ({ ...a, students }))}
+                />
+                <ChapterStatusPicker
+                  cls={allot.cls}
                   selected={allot.students}
                   onChange={(students) => setAllot(a => ({ ...a, students }))}
                 />
@@ -673,6 +678,105 @@ function StudentPicker({ selected, onChange }) {
           </div>
         )}
       </div>
+    </div>
+  )
+}
+
+// Bulk-add by chapter status. When the class is booked against a chapter, the
+// same ladder the scheduler filters on (not allotted → allotted → attended →
+// done, from /api/admin/syllabus-completion) lists every enrolled student in
+// the paper's scope with where they stand on that chapter — so "add everyone
+// who still needs it" is one click instead of a name-by-name search. Renders
+// nothing for a class with no chapter.
+const PICKER_CHIPS = [
+  { key: 'not-allotted', label: 'Not allotted', on: 'bg-gray-500 text-white',    title: 'No class for this chapter is assigned to them yet' },
+  { key: 'allotted',     label: 'Allotted',     on: 'bg-indigo-500 text-white',  title: 'A class is assigned, or was held and missed — not attended yet' },
+  { key: 'attended',     label: 'Attended',     on: 'bg-sky-600 text-white',     title: 'Attended at least one class for it; not completed yet' },
+  { key: 'completed',    label: '✓ Done',       on: 'bg-emerald-600 text-white', title: 'Completed this chapter' },
+]
+
+function ChapterStatusPicker({ cls, selected, onChange }) {
+  const subjectId = cls.subject?.subjectId ? String(cls.subject.subjectId) : ''
+  const chapterId = cls.chapter?.chapterId ? String(cls.chapter.chapterId) : ''
+  const unitId    = cls.unit?.unitId ? String(cls.unit.unitId) : ''
+  const url = subjectId && chapterId
+    ? `/api/admin/syllabus-completion?subjectId=${subjectId}&chapterId=${chapterId}${unitId ? `&unitId=${unitId}` : ''}&withStudents=1`
+    : ''
+  // `key` is the url the held answer belongs to — anything else means we're
+  // still loading, so nothing is set synchronously in the effect.
+  const [state, setState]   = useState({ key: null, data: null, error: '' })   // data: { students: [{ id, name, phoneNumber, status, … }], statusCounts }
+  const [status, setStatus] = useState('not-allotted')
+
+  useEffect(() => {
+    if (!url) return
+    let stale = false
+    apiFetch(url)
+      .then(d => { if (!stale) setState({ key: url, data: d, error: '' }) })
+      .catch(err => { if (!stale) setState({ key: url, data: null, error: err.message || 'Could not load chapter status' }) })
+    return () => { stale = true }
+  }, [url])
+
+  if (!url) return null
+  const settled = state.key === url
+  const data  = settled ? state.data : null
+  const error = settled ? state.error : ''
+
+  const pickedIds = new Set(selected.map(s => String(s.id)))
+  const pool = (data?.students || []).filter(s => s.status === status)
+  const addable = pool.filter(s => !pickedIds.has(String(s.id)))
+  const add = (list) => onChange([...selected, ...list.map(s => ({ id: s.id, name: s.name || '', phoneNumber: s.phoneNumber || '' }))])
+  const itemLabel = [cls.subject?.name, cls.chapter?.name, cls.unit?.name].filter(Boolean).join(' · ')
+  const chip = PICKER_CHIPS.find(c => c.key === status)
+
+  return (
+    <div className="mt-4 border-t border-gray-100 pt-3">
+      <p className="text-xs font-semibold text-gray-700">Add by chapter status</p>
+      <p className="text-[11px] text-gray-400 mb-2 truncate" title={itemLabel}>
+        Where each student in this paper stands on <span className="text-gray-600">{itemLabel}</span>
+      </p>
+      {error ? (
+        <p className="text-xs text-red-500">{error}</p>
+      ) : !data ? (
+        <p className="text-xs text-gray-400">Checking chapter status…</p>
+      ) : (
+        <>
+          <div className="flex flex-wrap gap-1 mb-2">
+            {PICKER_CHIPS.map(c => (
+              <button key={c.key} type="button" onClick={() => setStatus(c.key)} title={c.title}
+                className={`text-[10px] font-bold px-2 py-1 rounded-md transition-colors ${
+                  status === c.key ? c.on : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>
+                {c.label} ({data.statusCounts?.[c.key] || 0})
+              </button>
+            ))}
+          </div>
+          {!pool.length ? (
+            <p className="text-xs text-gray-400">Nobody in this paper is "{chip?.label}" for this chapter.</p>
+          ) : !addable.length ? (
+            <p className="text-xs text-gray-400">All {pool.length} of them are already on the list.</p>
+          ) : (
+            <>
+              <div className="max-h-40 overflow-y-auto border border-gray-100 rounded-xl divide-y divide-gray-50">
+                {addable.map(s => (
+                  <button key={s.id} type="button" onClick={() => add([s])}
+                    className="w-full text-left px-3 py-1.5 hover:bg-indigo-50 text-sm flex items-center gap-2">
+                    <span className="font-medium text-gray-800 truncate">{s.name || '—'}</span>
+                    <span className="text-xs text-gray-400 truncate">{s.phoneNumber || s.email}</span>
+                    {enrollmentTag(s) && (
+                      <span className="text-[9px] font-bold text-indigo-500 bg-indigo-50 px-1.5 py-0.5 rounded ml-auto flex-shrink-0">
+                        {enrollmentTag(s)}
+                      </span>
+                    )}
+                  </button>
+                ))}
+              </div>
+              <button type="button" onClick={() => add(addable)}
+                className="mt-2 text-xs font-semibold text-indigo-600 hover:text-indigo-800">
+                + Add all {addable.length}
+              </button>
+            </>
+          )}
+        </>
+      )}
     </div>
   )
 }

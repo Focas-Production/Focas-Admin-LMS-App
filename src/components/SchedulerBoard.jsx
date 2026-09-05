@@ -2,8 +2,9 @@ import { useState, useEffect, useMemo } from 'react'
 import { apiFetch } from '../api'
 import {
   FIELD_DEFS, fieldDef, opsFor, newCondition, conditionComplete, conditionReady,
-  evalCondition, chapterConditionKey, studiesSubject, effectiveSlot,
-  normalizeCondition, subjectIdsOf, SLOT_OPTIONS, SLOT_SHORT,
+  evalCondition, chapterConditionKey, studiesSubject,
+  normalizeCondition, subjectIdsOf, SLOT_OPTIONS, DAY_TYPES,
+  availabilityLabel, hasSlotAvailability, isAvailableFor,
 } from '../lib/rosterFilter'
 import SlotEditorModal from './SlotEditorModal'
 
@@ -57,6 +58,25 @@ const ENROLMENT_CHIPS = [
   { value: 'unset',    label: 'Not set' },
 ]
 
+// The roster's chapter-status chips. The four rungs are the same ladder the
+// Progress pages badge each student's chapters on (not-allotted → allotted →
+// attended → done); Pending is everyone short of done, the chip the board
+// always had. Same verdicts as the Progress pages, from the same endpoint.
+const ROSTER_STATUS_CHIPS = [
+  { key: 'all',          label: 'All',          on: 'bg-gray-800 text-white',    title: 'Everyone studying this paper' },
+  { key: 'pending',      label: 'Pending',      on: 'bg-amber-500 text-white',   title: 'Everyone who has not completed this chapter/unit' },
+  { key: 'not-allotted', label: 'Not allotted', on: 'bg-gray-500 text-white',    title: 'No class for this chapter/unit is assigned to them yet' },
+  { key: 'allotted',     label: 'Allotted',     on: 'bg-indigo-500 text-white',  title: 'A class is assigned, or was held and missed — not attended yet' },
+  { key: 'attended',     label: 'Attended',     on: 'bg-sky-600 text-white',     title: 'Attended at least one class for it; not completed yet' },
+  { key: 'done',         label: '✓ Done',       on: 'bg-emerald-600 text-white', title: 'Completed this chapter/unit' },
+]
+const ROSTER_BADGE = {
+  done:           ['✓ Done',       'text-emerald-600 bg-emerald-50'],
+  attended:       ['Attended',     'text-sky-700 bg-sky-50'],
+  allotted:       ['Allotted',     'text-indigo-600 bg-indigo-50'],
+  'not-allotted': ['Not allotted', 'text-gray-500 bg-gray-100'],
+}
+
 export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onStagedCount }) {
   const [students, setStudents] = useState(null)   // full roster for the left panel
   const [search, setSearch]     = useState('')
@@ -64,14 +84,14 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
   const [subjFilter,  setSubjFilter]  = useState('')      // subject id, '' = any
   const [chapFilter,  setChapFilter]  = useState('')      // chapter id, '' = any (needs a subject)
   const [unitFilter,  setUnitFilter]  = useState('')      // unit id, '' = whole chapter
-  const [statusFilter, setStatusFilter] = useState('all') // 'all' | 'done' | 'pending' for the picked chapter
-  const [completion, setCompletion]   = useState(null)    // { key, ids: Set } — who completed the picked item
+  const [statusFilter, setStatusFilter] = useState('all') // a ROSTER_STATUS_CHIPS key, for the picked chapter
+  const [completion, setCompletion]   = useState(null)    // { key, done, attended, allotted: Set } — the picked item's rungs
   const [completionError, setCompletionError] = useState('')
 
   // ── Zoho-style advanced filters ──
   const [advOpen, setAdvOpen]           = useState(false)  // the drawer
   const [advConditions, setAdvConditions] = useState([])   // condition rows, ANDed (lib/rosterFilter)
-  const [chapterSets, setChapterSets]   = useState({})     // condition key → Set(userIds) | 'error'
+  const [chapterSets, setChapterSets]   = useState({})     // condition key → { done, attended, allotted: Set(userIds) } | 'error'
   const [views, setViews]               = useState(null)   // saved filter views (server, shared)
   const [activeViewId, setActiveViewId] = useState('')
   const [slotEditor, setSlotEditor]     = useState(null)   // student whose slot times are being edited
@@ -174,10 +194,11 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
     [pickedSubject, chapFilter],
   )
 
-  // Who has completed the picked chapter/unit — same verdict the Progress pages
-  // show (manual override wins, else taught-to-them + attended enough). The
-  // stale flag stops an older, slower response from landing after a newer one
-  // and lying about the current selection.
+  // Where every student stands on the picked chapter/unit — the same ladder the
+  // Progress pages show (completed: manual override wins, else taught-to-them +
+  // attended enough; attended: present in a session; allotted: on a class
+  // roster). The stale flag stops an older, slower response from landing after
+  // a newer one and lying about the current selection.
   const completionKey = `${subjFilter}|${chapFilter}|${unitFilter}`
   useEffect(() => {
     if (!subjFilter || !chapFilter) { setCompletion(null); setCompletionError(''); return }
@@ -185,16 +206,25 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
     setCompletionError('')
     const key = `${subjFilter}|${chapFilter}|${unitFilter}`
     apiFetch(`/api/admin/syllabus-completion?subjectId=${subjFilter}&chapterId=${chapFilter}${unitFilter ? `&unitId=${unitFilter}` : ''}`)
-      .then(d => { if (!stale) setCompletion({ key, ids: new Set(d.completedIds || []) }) })
+      .then(d => {
+        if (stale) return
+        setCompletion({
+          key,
+          done:     new Set(d.completedIds || []),
+          attended: new Set(d.attendedIds || []),
+          allotted: new Set(d.allottedIds || []),
+        })
+      })
       .catch(err => { if (!stale) { setCompletion(null); setCompletionError(err.message || 'Could not check completion') } })
     return () => { stale = true }
   }, [subjFilter, chapFilter, unitFilter])
   const completionReady = !!completion && completion.key === completionKey
 
-  // Advanced chapter-completion conditions each need their own who-completed-it
-  // set. Fetched once per distinct (subject, chapter, unit) and kept for the
-  // board's lifetime; 'error' marks a failed fetch so the condition passes
-  // everyone rather than silently hiding students.
+  // Advanced chapter-status conditions each need their own buckets (who has
+  // completed / attended / been allotted the item). Fetched once per distinct
+  // (subject, chapter, unit) and kept for the board's lifetime; 'error' marks a
+  // failed fetch so the condition passes everyone rather than silently hiding
+  // students.
   useEffect(() => {
     const need = [...new Set(
       advConditions
@@ -206,7 +236,17 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
     for (const key of need) {
       const [sub, ch, un] = key.split('|')
       apiFetch(`/api/admin/syllabus-completion?subjectId=${sub}&chapterId=${ch}${un ? `&unitId=${un}` : ''}`)
-        .then(d => { if (!stale) setChapterSets(prev => ({ ...prev, [key]: new Set(d.completedIds || []) })) })
+        .then(d => {
+          if (stale) return
+          setChapterSets(prev => ({
+            ...prev,
+            [key]: {
+              done:     new Set(d.completedIds || []),
+              attended: new Set(d.attendedIds || []),
+              allotted: new Set(d.allottedIds || []),
+            },
+          }))
+        })
         .catch(() => { if (!stale) setChapterSets(prev => ({ ...prev, [key]: 'error' })) })
     }
     return () => { stale = true }
@@ -234,7 +274,19 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
     if (!advConditions.every(c => evalCondition(s, c, filterCtx))) return false
     return true
   })
-  const doneCount = completionReady ? scoped.filter(s => completion.ids.has(String(s._id))).length : 0
+  // One student's rung on the picked item, from the exclusive buckets the
+  // server sends; anyone in none of them has no class for it yet.
+  const rosterStatus = (s) => {
+    const id = String(s._id)
+    return completion.done.has(id) ? 'done'
+      : completion.attended.has(id) ? 'attended'
+      : completion.allotted.has(id) ? 'allotted'
+      : 'not-allotted'
+  }
+  const statusCounts = completionReady
+    ? scoped.reduce((c, s) => { const k = rosterStatus(s); c[k] = (c[k] || 0) + 1; return c }, { all: scoped.length })
+    : null
+  if (statusCounts) statusCounts.pending = scoped.length - (statusCounts.done || 0)
 
   const filtered = scoped.filter(s => {
     const q = search.trim().toLowerCase()
@@ -242,8 +294,8 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
     // Until the verdicts arrive the status chips don't hide anyone — better a
     // beat of "everyone" than a flash of an empty roster.
     if (chapFilter && statusFilter !== 'all' && completionReady) {
-      const done = completion.ids.has(String(s._id))
-      if (statusFilter === 'done' ? !done : done) return false
+      const st = rosterStatus(s)
+      if (statusFilter === 'pending' ? st === 'done' : st !== statusFilter) return false
     }
     return true
   })
@@ -596,23 +648,12 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
             )}
             {pickedChapter && (
               <>
-                <div className="flex gap-1 mt-2">
-                  {[
-                    ['all', 'All'],
-                    ['done', `✓ Done${completionReady ? ` (${doneCount})` : ''}`],
-                    ['pending', `Pending${completionReady ? ` (${scoped.length - doneCount})` : ''}`],
-                  ].map(([v, label]) => (
-                    <button key={v} onClick={() => setStatusFilter(v)}
-                      title={v === 'done' ? 'Students who have completed this chapter/unit'
-                        : v === 'pending' ? 'Students who still need this chapter/unit'
-                        : 'Everyone studying this paper'}
+                <div className="flex flex-wrap gap-1 mt-2">
+                  {ROSTER_STATUS_CHIPS.map(c => (
+                    <button key={c.key} onClick={() => setStatusFilter(c.key)} title={c.title}
                       className={`text-[10px] font-bold px-2 py-1 rounded-md transition-colors ${
-                        statusFilter === v
-                          ? v === 'pending' ? 'bg-amber-500 text-white'
-                            : v === 'done' ? 'bg-emerald-600 text-white'
-                            : 'bg-indigo-600 text-white'
-                          : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>
-                      {label}
+                        statusFilter === c.key ? c.on : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>
+                      {c.label}{statusCounts ? ` (${statusCounts[c.key] || 0})` : ''}
                     </button>
                   ))}
                 </div>
@@ -625,7 +666,7 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
 
             <div className="flex items-center gap-2 mt-2">
               <button onClick={() => setAdvOpen(true)}
-                title="Stack conditions on any field — joining date, last login, slot time, chapter completion…"
+                title="Stack conditions on any field — joining date, last login, slot availability, chapter completion…"
                 className={`text-[10px] font-bold px-2 py-1 rounded-md transition-colors ${
                   activeConditions.length ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>
                 ⚙ Advanced{activeConditions.length ? ` · ${activeConditions.length}` : ''}
@@ -669,18 +710,19 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
                   ${dragId === String(s._id) ? 'opacity-40' : ''}`}>
                 <div className="flex items-center gap-1">
                   <p className="text-sm font-medium text-gray-800 truncate flex-1 min-w-0">{s.name || '—'}</p>
-                  {/* Preferred slot for the picked paper (or their default), and
-                      the editor to change it — admins re-set these any time. */}
-                  {effectiveSlot(s, subjFilter || null) && (
-                    <span className="text-[9px] font-bold text-sky-600 bg-sky-50 px-1.5 py-0.5 rounded flex-shrink-0"
-                      title="Preferred slot">
-                      🕐 {SLOT_SHORT[effectiveSlot(s, subjFilter || null)]}
+                  {/* Which slots they can attend, by day type ("All days 1,4",
+                      "Wkdy 1,4 · Wknd 2"), and the editor to change it —
+                      admins re-set these any time. */}
+                  {availabilityLabel(s) && (
+                    <span className="text-[9px] font-bold text-sky-600 bg-sky-50 px-1.5 py-0.5 rounded flex-shrink-0 max-w-[110px] truncate"
+                      title={`Slot availability: ${availabilityLabel(s)}`}>
+                      🕐 {availabilityLabel(s)}
                     </span>
                   )}
                   <button onClick={e => { e.stopPropagation(); setSlotEditor(s) }}
-                    title="Set this student's slot times"
+                    title="Set this student's slot availability"
                     className={`text-[10px] flex-shrink-0 px-1 rounded hover:bg-sky-100 ${
-                      (s.slotPreferences || []).length ? 'text-sky-500' : 'text-gray-300 opacity-0 group-hover:opacity-100'}`}>
+                      hasSlotAvailability(s) ? 'text-sky-500' : 'text-gray-300 opacity-0 group-hover:opacity-100'}`}>
                     🕐
                   </button>
                 </div>
@@ -691,11 +733,10 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
                       {enrollmentLabel(s)}
                     </span>
                   )}
-                  {chapFilter && completionReady && (
-                    completion.ids.has(String(s._id))
-                      ? <span className="text-[9px] font-bold text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded flex-shrink-0">✓ Done</span>
-                      : <span className="text-[9px] font-bold text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded flex-shrink-0">Pending</span>
-                  )}
+                  {chapFilter && completionReady && (() => {
+                    const [label, cls] = ROSTER_BADGE[rosterStatus(s)]
+                    return <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded flex-shrink-0 ${cls}`}>{label}</span>
+                  })()}
                 </div>
               </div>
             ))}
@@ -781,17 +822,24 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
                               const hovered = overCell === cellId
                               const past = !cls &&
                                 new Date(day.getFullYear(), day.getMonth(), day.getDate(), slot.endHour) < new Date()
+                              // While a student is being dragged, the cells
+                              // outside their slot availability fade so the
+                              // right ones stand out. The drop still works —
+                              // whether to book them anyway is the admin's call.
+                              const dragged = dragId ? byId.get(dragId) : null
+                              const offSlot = !!dragged && !past && !isAvailableFor(dragged, day, slot.key)
                               return (
                                 <td key={col.roomName} className="align-top"
                                   onDragOver={e => { if (past) return; e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; setOverCell(cellId) }}
                                   onDragLeave={() => setOverCell(o => (o === cellId ? null : o))}
                                   onDrop={e => { if (past) return; e.preventDefault(); stageDrop(day, slot, col, e.dataTransfer.getData('text/plain')) }}>
                                   <div className={`relative rounded-xl border p-1.5 transition-colors ${cfgReady ? 'min-h-[92px]' : 'min-h-[52px]'}
-                                    ${hovered ? 'border-indigo-400 bg-indigo-50'
+                                    ${hovered ? (offSlot ? 'border-amber-400 bg-amber-50' : 'border-indigo-400 bg-indigo-50')
                                       : cellStaged.length ? 'border-amber-300 bg-amber-50/60'
                                       : cls ? 'border-gray-200 bg-gray-50'
                                       : past ? 'border-gray-100 bg-gray-50/50'
-                                      : 'border-dashed border-gray-200'}`}>
+                                      : 'border-dashed border-gray-200'}
+                                    ${offSlot && !hovered ? 'opacity-40' : ''}`}>
                                     {past && !cls ? (
                                       <p className="text-[10px] text-gray-300 pt-3 text-center">slot over</p>
                                     ) : (
@@ -862,14 +910,20 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
                                           {cls && !(cls.allowedStudents || []).length && !cellStaged.length && (
                                             <span className="text-[10px] text-gray-400 italic">open to all</span>
                                           )}
-                                          {cellStaged.map(id => (
-                                            <span key={id}
-                                              className="inline-flex items-center gap-0.5 text-[10px] bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded-md border border-amber-200">
-                                              {chipName(id)}
-                                              <button type="button" onClick={() => unstage(cellId, id)}
-                                                className="text-amber-500 hover:text-amber-900 font-bold leading-none">×</button>
-                                            </span>
-                                          ))}
+                                          {cellStaged.map(id => {
+                                            // ⚠ marks a student parked outside their slot availability.
+                                            const st = byId.get(id)
+                                            const off = !!st && !isAvailableFor(st, day, slot.key)
+                                            return (
+                                              <span key={id}
+                                                title={off ? "Outside this student's slot availability" : undefined}
+                                                className="inline-flex items-center gap-0.5 text-[10px] bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded-md border border-amber-200">
+                                                {off && <span className="text-red-500">⚠</span>}{chipName(id)}
+                                                <button type="button" onClick={() => unstage(cellId, id)}
+                                                  className="text-amber-500 hover:text-amber-900 font-bold leading-none">×</button>
+                                              </span>
+                                            )
+                                          })}
                                           {!cls && !cellStaged.length && (
                                             !cfgReady ? (
                                               // Setup comes first — the cell only invites drops
@@ -1095,6 +1149,17 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
                     <p className="text-[11px] text-gray-500 mb-2">
                       {cell.ids.map(chipName).join(', ')}
                     </p>
+                    {(() => {
+                      const off = cell.ids.filter(id => {
+                        const st = byId.get(id)
+                        return !!st && !isAvailableFor(st, cell.day, cell.slot.key)
+                      })
+                      return off.length > 0 && (
+                        <p className="text-[10px] text-amber-600 mb-2">
+                          ⚠ Outside their slot availability: {off.map(chipName).join(', ')} — booking them anyway is your call.
+                        </p>
+                      )
+                    })()}
                     {existing ? (
                       <p className="text-[11px] text-indigo-600">
                         → added to <b>{existing.title}</b>
@@ -1191,13 +1256,13 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
         />
       )}
 
-      {/* ── Per-student slot time editor ── */}
+      {/* ── Per-student slot availability editor ── */}
       {slotEditor && (
         <SlotEditorModal
-          student={slotEditor} subjects={subjects}
+          student={slotEditor}
           onSaved={u => {
             setStudents(list => (list || []).map(s => String(s._id) === String(u._id)
-              ? { ...s, slotPreferences: u.slotPreferences } : s))
+              ? { ...s, slotAvailability: u.slotAvailability } : s))
             setSlotEditor(null)
           }}
           onClose={() => setSlotEditor(null)}
@@ -1483,11 +1548,11 @@ function ConditionRow({ cond, subjects, onChange, onRemove }) {
                 {SLOT_OPTIONS.map(o => <option key={o.key} value={o.key}>{o.label}</option>)}
               </select>
             )}
-            <select value={cond.value?.subjectId || ''}
-              onChange={e => onChange({ value: { ...cond.value, subjectId: e.target.value } })}
+            <select value={cond.value?.days || ''}
+              onChange={e => onChange({ value: { ...cond.value, days: e.target.value } })}
               className={`${inputCls} w-full`}>
-              <option value="">For any paper</option>
-              {(subjects || []).map(s => <option key={s._id} value={String(s._id)}>For {s.name} ({s.level})</option>)}
+              <option value="">On any day</option>
+              {DAY_TYPES.map(d => <option key={d.key} value={d.key}>On {d.long.toLowerCase()}</option>)}
             </select>
           </div>
         )}
