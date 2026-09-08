@@ -52,10 +52,31 @@ const STATUS_STYLE = {
 // Key used for the mentor filter: '' = every mentor, 'unassigned' = the shared pool.
 const mentorKey = (s) => (s.mentorId ? String(s.mentorId) : 'unassigned')
 
+// Which date the From/To filter applies to.
+//   submitted → when the student handed the paper in (workload view)
+//   evaluated → when the mentor corrected it (payout view: "papers corrected this month")
+const DATE_BY = [
+  ['submitted', 'Submitted date'],
+  ['evaluated', 'Evaluated date'],
+]
+
+// Local calendar day → YYYY-MM-DD (what <input type="date"> wants).
+const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+// First and last day of the month `offset` months from now (0 = this month, -1 = last month).
+function monthBounds(offset) {
+  const now = new Date()
+  return {
+    from: ymd(new Date(now.getFullYear(), now.getMonth() + offset, 1)),
+    to:   ymd(new Date(now.getFullYear(), now.getMonth() + offset + 1, 0)),
+  }
+}
+const MONTH_PRESETS = [[0, 'This month'], [-1, 'Last month']]
+
 function SubmissionsView({ showToast }) {
   const [status, setStatus] = useState('')
   const [mentorFilter, setMentorFilter] = useState('')   // '' | mentorId | 'unassigned'
-  const [dateFrom, setDateFrom] = useState('')           // YYYY-MM-DD (submission date)
+  const [dateBy, setDateBy] = useState('submitted')      // 'submitted' | 'evaluated'
+  const [dateFrom, setDateFrom] = useState('')           // YYYY-MM-DD
   const [dateTo, setDateTo] = useState('')               // YYYY-MM-DD
   const [rows, setRows] = useState(null)
   const [mentors, setMentors] = useState([])
@@ -69,10 +90,13 @@ function SubmissionsView({ showToast }) {
   const [totalPages, setTotalPages] = useState(1)
   const [detailId, setDetailId] = useState(null)   // submission opened in the detail modal
 
+  const evaluatedMode = dateBy === 'evaluated'
+
   // Local calendar days → ISO instants, so "2 Sep" means 2 Sep in the admin's timezone.
   const applyDateParams = (params) => {
     if (dateFrom) params.set('dateFrom', new Date(`${dateFrom}T00:00:00`).toISOString())
     if (dateTo)   params.set('dateTo',   new Date(`${dateTo}T23:59:59.999`).toISOString())
+    if (evaluatedMode) params.set('dateBy', 'evaluated')
   }
 
   const load = () => {
@@ -99,8 +123,8 @@ function SubmissionsView({ showToast }) {
       .then(d => { setStats(d.stats || []); setTotals(d.totals || null) })
       .catch(() => { setStats([]); setTotals(null) })
   }
-  useEffect(() => { load() }, [status, page, limit, mentorFilter, dateFrom, dateTo])
-  useEffect(() => { loadStats() }, [dateFrom, dateTo])
+  useEffect(() => { load() }, [status, page, limit, mentorFilter, dateBy, dateFrom, dateTo])
+  useEffect(() => { loadStats() }, [dateBy, dateFrom, dateTo])
   useEffect(() => {
     apiFetch('/api/admin/mentors').then(d => setMentors(d.mentors || [])).catch(() => {})
   }, [])
@@ -112,6 +136,10 @@ function SubmissionsView({ showToast }) {
   const onDateFrom = (v) => { setDateFrom(v); setPage(1) }
   const onDateTo   = (v) => { setDateTo(v); setPage(1) }
   const clearDates = () => { setDateFrom(''); setDateTo(''); setPage(1) }
+  const onMonth    = (offset) => { const { from, to } = monthBounds(offset); setDateFrom(from); setDateTo(to); setPage(1) }
+  // Evaluated basis only ever holds completed papers, so the status tab is meaningless there.
+  const onDateBy   = (v) => { setDateBy(v); setStatus(''); setPage(1) }
+  const monthActive = (offset) => { const { from, to } = monthBounds(offset); return dateFrom === from && dateTo === to }
 
   const assign = async (id, mentorId) => {
     if (!mentorId) return
@@ -134,19 +162,40 @@ function SubmissionsView({ showToast }) {
     <section className="bg-white rounded-2xl shadow-sm p-5">
       <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
         <h2 className="font-bold text-gray-900">Submissions</h2>
-        <div className="flex gap-1.5">
-          {STATUS_TABS.map(([v, l]) => (
-            <button key={v} onClick={() => onStatus(v)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
-                status === v ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-              }`}>{l}</button>
-          ))}
-        </div>
+        {evaluatedMode ? (
+          <span className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-100 text-emerald-700">
+            Evaluated papers only
+          </span>
+        ) : (
+          <div className="flex gap-1.5">
+            {STATUS_TABS.map(([v, l]) => (
+              <button key={v} onClick={() => onStatus(v)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                  status === v ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                }`}>{l}</button>
+            ))}
+          </div>
+        )}
       </div>
-      <p className="text-xs text-gray-400 mb-4">Read-only overview. Assign a pending paper to a mentor manually, or let it sit in the pool for self-claim.</p>
+      <p className="text-xs text-gray-400 mb-4">
+        {evaluatedMode
+          ? 'Papers counted by the date the mentor corrected them — use this with a month range to work out each mentor’s payout.'
+          : 'Read-only overview. Assign a pending paper to a mentor manually, or let it sit in the pool for self-claim.'}
+      </p>
 
-      {/* Date filter (by submission date) */}
+      {/* Date filter — by submission date (workload) or evaluation date (payout) */}
       <div className="flex flex-wrap items-end gap-2 mb-4">
+        <div>
+          <label className="block text-[11px] font-semibold text-gray-500 mb-1">Count by</label>
+          <div className="flex rounded-lg border border-gray-200 overflow-hidden">
+            {DATE_BY.map(([v, l]) => (
+              <button key={v} onClick={() => onDateBy(v)}
+                className={`px-3 py-1.5 text-xs font-semibold transition-colors ${
+                  dateBy === v ? 'bg-indigo-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'
+                }`}>{l}</button>
+            ))}
+          </div>
+        </div>
         <div>
           <label className="block text-[11px] font-semibold text-gray-500 mb-1">From date</label>
           <input type="date" value={dateFrom} max={dateTo || undefined} onChange={e => onDateFrom(e.target.value)}
@@ -157,6 +206,14 @@ function SubmissionsView({ showToast }) {
           <input type="date" value={dateTo} min={dateFrom || undefined} onChange={e => onDateTo(e.target.value)}
             className="px-2.5 py-1.5 text-xs border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-400" />
         </div>
+        {MONTH_PRESETS.map(([offset, label]) => (
+          <button key={label} onClick={() => onMonth(offset)}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
+              monthActive(offset)
+                ? 'border-indigo-500 bg-indigo-50 text-indigo-700'
+                : 'border-gray-200 text-gray-600 hover:text-gray-800 hover:bg-gray-50'
+            }`}>{label}</button>
+        ))}
         {(dateFrom || dateTo) && (
           <button onClick={clearDates}
             className="px-3 py-1.5 rounded-lg text-xs font-semibold border border-gray-200 text-gray-500 hover:text-gray-800 hover:bg-gray-50">
@@ -166,21 +223,21 @@ function SubmissionsView({ showToast }) {
       </div>
 
       {/* Corrected vs pending totals — follows the mentor + date filters (not the status tab) */}
-      {counts && <TotalsBar counts={counts} />}
+      {counts && <TotalsBar counts={counts} evaluatedOnly={evaluatedMode} />}
 
       {/* Per-paper-marks breakdown (25 / 50 / 100 mark papers) */}
-      {marksBreakdown.length > 0 && <MarksBreakdown items={marksBreakdown} />}
+      {marksBreakdown.length > 0 && <MarksBreakdown items={marksBreakdown} evaluatedOnly={evaluatedMode} />}
 
       {stats !== null && stats.length > 0 && (
         <MentorFilter stats={stats} totals={totals} value={mentorFilter} onChange={onMentor}
-          status={status} onStatus={onStatus} />
+          status={status} onStatus={onStatus} evaluatedOnly={evaluatedMode} />
       )}
 
       {rows === null ? (
         <p className="text-sm text-gray-400">Loading…</p>
       ) : !rows.length ? (
         <p className="text-sm text-gray-500">
-          No submissions{status ? ` with status "${status}"` : ''}
+          No {evaluatedMode ? 'evaluated papers' : 'submissions'}{status ? ` with status "${status}"` : ''}
           {selected ? ` for ${mentorLabel(selected)}` : ''}
           {dateFrom || dateTo ? ' in the selected date range' : ''} yet.
         </p>
@@ -196,6 +253,7 @@ function SubmissionsView({ showToast }) {
                 <th className="text-left font-semibold px-3 py-2.5">Paper</th>
                 <th className="text-center font-semibold px-3 py-2.5">Marks</th>
                 <th className="text-left font-semibold px-3 py-2.5">Mentor</th>
+                <th className="text-left font-semibold px-3 py-2.5">{evaluatedMode ? 'Evaluated on' : 'Submitted on'}</th>
                 <th className="text-center font-semibold px-3 py-2.5">Status</th>
               </tr>
             </thead>
@@ -229,6 +287,9 @@ function SubmissionsView({ showToast }) {
                         {mentors.map(m => <option key={m._id} value={m._id}>{m.name || m.phoneNumber}</option>)}
                       </select>
                     )}
+                  </td>
+                  <td className="px-3 py-2.5 text-gray-600 whitespace-nowrap text-xs">
+                    {fmtDay(evaluatedMode ? r.evaluatedAt : r.createdAt)}
                   </td>
                   <td className="px-3 py-2.5 text-center">
                     <span className={`px-2 py-0.5 rounded-full text-xs font-semibold ${STATUS_STYLE[r.status] || ''}`}>
@@ -273,16 +334,20 @@ function SubmissionsView({ showToast }) {
 }
 
 // ───────────────────────── totals bar (corrected vs pending) ─────────────────────────
-function TotalsBar({ counts }) {
+// evaluatedOnly: the evaluated-date basis only ever holds corrected papers, so the
+// pending tiles would always read 0 — show a single "papers evaluated" tile instead.
+function TotalsBar({ counts, evaluatedOnly }) {
   const incomplete = (counts.pending || 0) + (counts.assigned || 0)
-  const tiles = [
-    ['Total papers', counts.total || 0,     'text-gray-900',    null],
-    ['Corrected',    counts.completed || 0, 'text-emerald-600', null],
-    ['Pending',      incomplete,            'text-amber-600',
-      `${counts.pending || 0} in pool · ${counts.assigned || 0} in progress`],
-  ]
+  const tiles = evaluatedOnly
+    ? [['Papers evaluated', counts.completed || 0, 'text-emerald-600', 'in the selected range · basis for mentor payout']]
+    : [
+      ['Total papers', counts.total || 0,     'text-gray-900',    null],
+      ['Corrected',    counts.completed || 0, 'text-emerald-600', null],
+      ['Pending',      incomplete,            'text-amber-600',
+        `${counts.pending || 0} in pool · ${counts.assigned || 0} in progress`],
+    ]
   return (
-    <div className="grid grid-cols-3 gap-2 mb-4">
+    <div className={`grid gap-2 mb-4 ${evaluatedOnly ? 'grid-cols-1 sm:grid-cols-3' : 'grid-cols-3'}`}>
       {tiles.map(([label, n, color, sub]) => (
         <div key={label} className="px-3 py-2.5 rounded-xl border border-gray-200 bg-gray-50/70">
           <span className={`block text-xl font-bold leading-none ${color}`}>{n}</span>
@@ -296,7 +361,9 @@ function TotalsBar({ counts }) {
 
 // Per-paper-marks breakdown: for each distinct totalMarks (25/50/100…), how many
 // papers are corrected vs still pending (pool + in progress) under the current filters.
-function MarksBreakdown({ items }) {
+// On the evaluated basis every paper is corrected, so only the evaluated count is shown —
+// handy when the mentor rate differs per paper size.
+function MarksBreakdown({ items, evaluatedOnly }) {
   return (
     <div className="mb-4">
       <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">By paper marks</p>
@@ -310,8 +377,10 @@ function MarksBreakdown({ items }) {
                 <span className="ml-1.5 text-[11px] font-medium text-gray-400">{m.total} papers</span>
               </p>
               <div className="flex items-center gap-3 mt-1.5 text-xs">
-                <span className="font-semibold text-emerald-700">{m.completed || 0} corrected</span>
-                <span className={`font-semibold ${incomplete ? 'text-amber-600' : 'text-gray-300'}`}>{incomplete} pending</span>
+                <span className="font-semibold text-emerald-700">{m.completed || 0} {evaluatedOnly ? 'evaluated' : 'corrected'}</span>
+                {!evaluatedOnly && (
+                  <span className={`font-semibold ${incomplete ? 'text-amber-600' : 'text-gray-300'}`}>{incomplete} pending</span>
+                )}
               </div>
             </div>
           )
@@ -336,22 +405,28 @@ function initials(s) {
   return (s.phoneNumber || '').slice(-2) || '?'
 }
 
-function MentorFilter({ stats, totals, value, onChange, status, onStatus }) {
+// evaluatedOnly: the evaluated-date basis — every paper here is corrected, so the chips
+// show a plain "N evaluated" count (the payout figure) instead of done-vs-pending.
+function MentorFilter({ stats, totals, value, onChange, status, onStatus, evaluatedOnly }) {
   const [query, setQuery] = useState('')
   const searchable = stats.length > 6
 
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase()
-    if (!q) return stats
-    return stats.filter(s => `${mentorLabel(s)} ${s.phoneNumber || ''}`.toLowerCase().includes(q))
-  }, [stats, query])
+    // The shared pool has no mentor to pay, and can't hold evaluated papers anyway.
+    const base = evaluatedOnly ? stats.filter(s => !isPool(s)) : stats
+    if (!q) return base
+    return base.filter(s => `${mentorLabel(s)} ${s.phoneNumber || ''}`.toLowerCase().includes(q))
+  }, [stats, query, evaluatedOnly])
 
   const selected = value ? stats.find(s => mentorKey(s) === value) : null
 
   return (
     <div className="mb-5">
       <div className="flex items-center justify-between gap-3 mb-2">
-        <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Mentor workload</p>
+        <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
+          {evaluatedOnly ? 'Papers evaluated per mentor' : 'Mentor workload'}
+        </p>
         {searchable && (
           <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search mentor…"
             className="w-44 px-2.5 py-1.5 text-xs border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-400" />
@@ -360,27 +435,30 @@ function MentorFilter({ stats, totals, value, onChange, status, onStatus }) {
 
       {/* Horizontal strip — stays one row and scrolls however many mentors there are */}
       <div className="flex gap-2 overflow-x-auto pb-1 -mx-1 px-1">
-        <MentorChip active={value === ''} onClick={() => onChange('')}
+        <MentorChip active={value === ''} onClick={() => onChange('')} evaluatedOnly={evaluatedOnly}
           avatar="ALL" label="All mentors" sub={`${stats.filter(s => !isPool(s)).length} mentors`}
           done={totals?.completed || 0} incomplete={(totals?.pending || 0) + (totals?.assigned || 0)} />
         {visible.map(s => (
           <MentorChip key={mentorKey(s)} active={value === mentorKey(s)} onClick={() => onChange(mentorKey(s))}
-            avatar={initials(s)} label={mentorLabel(s)} sub={mentorSub(s)} pool={isPool(s)}
+            avatar={initials(s)} label={mentorLabel(s)} sub={mentorSub(s)} pool={isPool(s)} evaluatedOnly={evaluatedOnly}
             done={s.completed} incomplete={incompleteOf(s)} />
         ))}
         {!visible.length && <p className="text-xs text-gray-400 py-3">No mentor matches “{query}”.</p>}
       </div>
 
-      {selected && <MentorSummary stat={selected} status={status} onStatus={onStatus} onClear={() => onChange('')} />}
+      {selected && (
+        <MentorSummary stat={selected} status={status} onStatus={onStatus} onClear={() => onChange('')}
+          evaluatedOnly={evaluatedOnly} />
+      )}
     </div>
   )
 }
 
-function MentorChip({ avatar, label, sub, done, incomplete, active, pool, onClick }) {
+function MentorChip({ avatar, label, sub, done, incomplete, active, pool, evaluatedOnly, onClick }) {
   const total = done + incomplete
   const pct = total ? Math.round((done / total) * 100) : 0
   return (
-    <button onClick={onClick} title={`${label} — ${done} of ${total} evaluated`}
+    <button onClick={onClick} title={evaluatedOnly ? `${label}: ${done} evaluated` : `${label}: ${done} of ${total} evaluated`}
       className={`shrink-0 w-[190px] text-left p-2.5 rounded-xl border transition-all ${
         active
           ? 'border-indigo-500 bg-indigo-50/60 shadow-sm ring-1 ring-indigo-500/20'
@@ -396,28 +474,40 @@ function MentorChip({ avatar, label, sub, done, incomplete, active, pool, onClic
         </span>
       </div>
 
-      {/* completion bar */}
-      <div className="mt-2.5 h-1.5 rounded-full bg-gray-100 overflow-hidden">
-        <div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${pct}%` }} />
-      </div>
-      <div className="flex items-center justify-between mt-1.5 text-[11px]">
-        <span className="font-semibold text-emerald-700">{done} done</span>
-        <span className={`font-semibold ${incomplete ? 'text-amber-600' : 'text-gray-300'}`}>{incomplete} pending</span>
-      </div>
+      {evaluatedOnly ? (
+        <div className="mt-2.5 flex items-baseline gap-1.5">
+          <span className={`text-xl font-bold leading-none ${done ? 'text-emerald-700' : 'text-gray-300'}`}>{done}</span>
+          <span className="text-[11px] font-semibold text-gray-500">evaluated</span>
+        </div>
+      ) : (
+        <>
+          {/* completion bar */}
+          <div className="mt-2.5 h-1.5 rounded-full bg-gray-100 overflow-hidden">
+            <div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${pct}%` }} />
+          </div>
+          <div className="flex items-center justify-between mt-1.5 text-[11px]">
+            <span className="font-semibold text-emerald-700">{done} done</span>
+            <span className={`font-semibold ${incomplete ? 'text-amber-600' : 'text-gray-300'}`}>{incomplete} pending</span>
+          </div>
+        </>
+      )}
     </button>
   )
 }
 
 // Detail strip for the selected mentor — the stat tiles double as status filters.
-function MentorSummary({ stat, status, onStatus, onClear }) {
+// On the evaluated basis there is nothing to filter by status, so only the count shows.
+function MentorSummary({ stat, status, onStatus, onClear, evaluatedOnly }) {
   const total = stat.total
   const pct = total ? Math.round((stat.completed / total) * 100) : 0
-  const tiles = [
-    ['',          'Total',       total,         'text-gray-900'],
-    ['pending',   'In pool',     stat.pending,  'text-amber-600'],
-    ['assigned',  'In progress', stat.assigned, 'text-blue-600'],
-    ['completed', 'Completed',   stat.completed,'text-emerald-600'],
-  ]
+  const tiles = evaluatedOnly
+    ? [['', 'Papers evaluated', stat.completed, 'text-emerald-600']]
+    : [
+      ['',          'Total',       total,         'text-gray-900'],
+      ['pending',   'In pool',     stat.pending,  'text-amber-600'],
+      ['assigned',  'In progress', stat.assigned, 'text-blue-600'],
+      ['completed', 'Completed',   stat.completed,'text-emerald-600'],
+    ]
   return (
     <div className="mt-3 rounded-xl border border-gray-200 bg-gray-50/70 p-3.5">
       <div className="flex items-start justify-between gap-3 flex-wrap">
@@ -426,7 +516,9 @@ function MentorSummary({ stat, status, onStatus, onClear }) {
           <p className="text-xs text-gray-500">
             {isPool(stat)
               ? 'Papers waiting for a mentor to claim or be assigned.'
-              : `${pct}% evaluated · ${incompleteOf(stat)} still pending${stat.phoneNumber ? ` · ${stat.phoneNumber}` : ''}`}
+              : evaluatedOnly
+                ? `${stat.completed} paper${stat.completed === 1 ? '' : 's'} corrected in the selected range${stat.phoneNumber ? ` · ${stat.phoneNumber}` : ''}`
+                : `${pct}% evaluated · ${incompleteOf(stat)} still pending${stat.phoneNumber ? ` · ${stat.phoneNumber}` : ''}`}
           </p>
         </div>
         <button onClick={onClear} className="text-xs font-semibold text-gray-500 hover:text-gray-800">✕ Clear</button>
@@ -434,8 +526,8 @@ function MentorSummary({ stat, status, onStatus, onClear }) {
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-3">
         {tiles.map(([val, label, n, color]) => (
-          <button key={label} onClick={() => onStatus(val)}
-            className={`px-3 py-2 rounded-lg border text-left transition-colors ${
+          <button key={label} onClick={() => onStatus(val)} disabled={evaluatedOnly}
+            className={`px-3 py-2 rounded-lg border text-left transition-colors disabled:cursor-default ${
               status === val ? 'border-indigo-400 bg-white ring-1 ring-indigo-400/30' : 'border-gray-200 bg-white hover:border-gray-300'
             }`}>
             <span className={`block text-lg font-bold leading-none ${color}`}>{n}</span>
@@ -452,6 +544,12 @@ function fmtDate(d) {
   if (!d) return '—'
   const dt = new Date(d)
   return Number.isNaN(dt.getTime()) ? '—' : dt.toLocaleString()
+}
+// Date only (e.g. "6 Sep 2026") — for the table's Submitted/Evaluated column.
+function fmtDay(d) {
+  if (!d) return '—'
+  const dt = new Date(d)
+  return Number.isNaN(dt.getTime()) ? '—' : dt.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })
 }
 
 // Open a file/document in a new tab. The blank window is opened synchronously (before
