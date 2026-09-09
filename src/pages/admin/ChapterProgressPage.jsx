@@ -44,8 +44,9 @@ function shortLabel(name) {
 function cellLook(cell) {
   const mark = cell?.manualMark || null
   const by = cell?.markedByName ? ` — marked by ${cell.markedByName}` : ''
-  if (mark === 'completed') return { glyph: '✓', cls: 'bg-emerald-600 text-white', title: `Completed (hand-set)${by}` }
-  if (mark === 'absent')    return { glyph: '✗', cls: 'bg-rose-500 text-white',    title: `Absent (hand-set)${by}` }
+  const missed = cell?.missed > 0 ? ` · also missed ${cell.missed} live class${cell.missed !== 1 ? 'es' : ''}` : ''
+  if (mark === 'completed') return { glyph: '✓', cls: 'bg-emerald-600 text-white', title: `Completed (hand-set)${by}${missed}` }
+  if (mark === 'absent')    return { glyph: '✗', cls: 'bg-rose-500 text-white',    title: `Absent (hand-set)${by}${missed}` }
   switch (cell?.status) {
     case 'completed': return { glyph: '✓', cls: 'bg-emerald-100 text-emerald-700', title: 'Completed through live classes' }
     case 'attended':  return { glyph: '◐', cls: 'bg-amber-100 text-amber-700',     title: 'Attended a class, not completed yet' }
