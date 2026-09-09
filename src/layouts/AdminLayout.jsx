@@ -97,6 +97,16 @@ const NAV_ITEMS = [
       </svg>
     ),
   },
+  {
+    to: '/admin/chapter-progress',
+    label: 'Chapter Progress',
+    icon: (
+      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+          d="M3 10h18M3 14h18M10 4v16M3 6a2 2 0 012-2h14a2 2 0 012 2v12a2 2 0 01-2 2H5a2 2 0 01-2-2V6z" />
+      </svg>
+    ),
+  },
 ]
 
 export default function AdminLayout() {

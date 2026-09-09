@@ -217,17 +217,27 @@ function useResource(path, params) {
   // still waiting. Nothing is set synchronously here, and the last good payload
   // survives a filter change so the filter controls built from it don't blank.
   const [state, setState] = useState({ key: null, data: null, error: '' })
+  // refresh() re-fetches the same url in place: the held answer stays on
+  // screen (no skeleton) until the fresh one lands — for after an edit the
+  // server has to re-judge, like a hand-set chapter mark.
+  const [tick, setTick] = useState(0)
+  const key = `${url}#${tick}`
 
   useEffect(() => {
     let alive = true
     apiFetch(url)
-      .then(d => alive && setState({ key: url, data: d, error: '' }))
-      .catch(e => alive && setState(prev => ({ key: url, data: prev.data, error: e.message || 'Failed to load' })))
+      .then(d => alive && setState({ key, data: d, error: '' }))
+      .catch(e => alive && setState(prev => ({ key, data: prev.data, error: e.message || 'Failed to load' })))
     return () => { alive = false }
-  }, [url])
+  }, [url, key])
 
-  const settled = state.key === url
-  return { data: state.data, error: settled ? state.error : '', loading: !settled }
+  const settled = state.key === key
+  const sameUrl = !!state.key && state.key.split('#')[0] === url
+  return {
+    data: state.data, error: settled ? state.error : '',
+    loading: !settled && !sameUrl, refreshing: !settled && sameUrl,
+    refresh: () => setTick(t => t + 1),
+  }
 }
 
 // Open a presigned file in a new tab. The blank window is opened synchronously
@@ -300,9 +310,27 @@ function reasonLabel(row) {
   return null
 }
 
-function ItemRow({ row }) {
+// The admin's hand-set mark on a topic, for work done before the LMS ran the
+// class: ✓ completed or ✗ absent, click again to clear. Same store the Chapter
+// Progress grid writes to.
+function MarkButton({ active, tone, busy, onClick, children }) {
+  const on  = tone === 'emerald' ? 'bg-emerald-600 text-white' : 'bg-rose-500 text-white'
+  const off = tone === 'emerald'
+    ? 'bg-white text-emerald-600 border border-emerald-200 hover:bg-emerald-50'
+    : 'bg-white text-rose-500 border border-rose-200 hover:bg-rose-50'
+  return (
+    <button type="button" onClick={onClick} disabled={busy}
+      title={active ? 'Click to clear this hand-set mark' : tone === 'emerald' ? 'Mark completed by hand' : 'Mark absent by hand'}
+      className={`w-7 h-7 rounded-md text-xs font-bold transition-colors disabled:opacity-50 ${active ? on : off}`}>
+      {children}
+    </button>
+  )
+}
+
+function ItemRow({ row, canMark, onMark, busy }) {
   const reason = reasonLabel(row)
   const badge = statusBadge(row)
+  const mark = row.manualMark || null
   return (
     <div className="flex items-center gap-3 px-3 py-2 bg-gray-50 rounded-lg">
       <div className="flex-1 min-w-0">
@@ -310,6 +338,7 @@ function ItemRow({ row }) {
         <p className="text-[11px] text-gray-400 mt-0.5">
           {row.sessions
             ? `${row.sessions} session${row.sessions !== 1 ? 's' : ''} · ${row.percent}% attended`
+            : mark ? `hand-set ${mark} by ${row.markedByName || 'admin'}`
             : `${row.allottedClasses || 0} class${row.allottedClasses === 1 ? '' : 'es'} allotted`}
           {reason && <span className={reason.cls}> · {reason.text}</span>}
           {row.nextClassAt && row.pendingKind !== 'upcoming' && (
@@ -317,6 +346,14 @@ function ItemRow({ row }) {
           )}
         </p>
       </div>
+      {canMark && onMark && (
+        <div className="flex items-center gap-1 flex-shrink-0">
+          <MarkButton active={mark === 'completed'} tone="emerald" busy={busy}
+            onClick={() => onMark(row, mark === 'completed' ? null : 'completed')}>✓</MarkButton>
+          <MarkButton active={mark === 'absent'} tone="rose" busy={busy}
+            onClick={() => onMark(row, mark === 'absent' ? null : 'absent')}>✗</MarkButton>
+        </div>
+      )}
       <Badge tone={badge.tone}
         title={row.source === 'manual' ? `Edited by ${row.markedByName || 'mentor'}`
           : row.source === 'chapter' ? 'Completed with the whole chapter'
@@ -327,8 +364,11 @@ function ItemRow({ row }) {
   )
 }
 
-function SubjectCard({ subject, query, rowFilter = 'all', defaultOpen }) {
+function SubjectCard({ subject, query, rowFilter = 'all', defaultOpen, onMark, busyKey }) {
   const [open, setOpen] = useState(defaultOpen)
+  // Hand-set marks go on units where a chapter has them (the grain classes
+  // are booked at); a chapter-level row of such a chapter can't take one.
+  const unitChapters = new Set(subject.chapters.filter(c => c.rows.some(r => r.unitId)).map(c => c.chapterId))
 
   const q = query.trim().toLowerCase()
   // A live search or a status filter forces every card open — collapsed
@@ -400,7 +440,11 @@ function SubjectCard({ subject, query, rowFilter = 'all', defaultOpen }) {
                   </div>
                 )}
                 <div className="space-y-1.5">
-                  {ch.rows.map(r => <ItemRow key={`${r.chapterId}:${r.unitId || ''}`} row={r} />)}
+                  {ch.rows.map(r => (
+                    <ItemRow key={`${r.chapterId}:${r.unitId || ''}`} row={r} onMark={onMark}
+                      canMark={!!r.unitId || !unitChapters.has(ch.chapterId)}
+                      busy={busyKey === `${r.subjectId}|${r.chapterId}|${r.unitId || ''}`} />
+                  ))}
                 </div>
               </div>
             )
@@ -411,7 +455,7 @@ function SubjectCard({ subject, query, rowFilter = 'all', defaultOpen }) {
   )
 }
 
-function SyllabusSection({ syllabus, thresholdPercent }) {
+function SyllabusSection({ syllabus, thresholdPercent, onMark, busyKey }) {
   const [filter, setFilter] = useState('all')
   const [rowFilter, setRowFilter] = useState('all')
   const [query, setQuery] = useState('')
@@ -474,7 +518,8 @@ function SyllabusSection({ syllabus, thresholdPercent }) {
         ) : !visible.length ? (
           <Empty title="No match" hint="Nothing here matches the current filter." />
         ) : visible.map(s => (
-          <SubjectCard key={s.subjectId} subject={s} query={query} rowFilter={rowFilter} defaultOpen={visible.length <= 3} />
+          <SubjectCard key={s.subjectId} subject={s} query={query} rowFilter={rowFilter} defaultOpen={visible.length <= 3}
+            onMark={onMark} busyKey={busyKey} />
         ))}
       </div>
     </Section>
@@ -930,7 +975,35 @@ function Header({ student, enrolled }) {
 
 export default function StudentProgressPage() {
   const { id } = useParams()
-  const { data: report, error, loading } = useResource(`/api/admin/users/${id}/report`, null)
+  const { data: report, error, loading, refresh } = useResource(`/api/admin/users/${id}/report`, null)
+
+  // Hand-set chapter marks (✓ / ✗ on a topic row). The server re-judges the
+  // item, so the report is re-fetched in place rather than patched locally.
+  const [busyKey, setBusyKey] = useState('')
+  const [note, setNote] = useState(null)
+  useEffect(() => {
+    if (!note) return
+    const t = setTimeout(() => setNote(null), 1800)
+    return () => clearTimeout(t)
+  }, [note])
+  async function markRow(row, mark) {
+    const key = `${row.subjectId}|${row.chapterId}|${row.unitId || ''}`
+    setBusyKey(key)
+    try {
+      await apiFetch(`/api/admin/users/${id}/chapter-status`, {
+        method: 'PUT',
+        body: JSON.stringify({ subjectId: row.subjectId, chapterId: row.chapterId, unitId: row.unitId || null, mark }),
+      })
+      refresh()
+      setNote({ text: mark === 'completed' ? `✓ ${row.unitName || row.chapterName} marked completed`
+        : mark === 'absent' ? `✗ ${row.unitName || row.chapterName} marked absent`
+        : `Mark cleared on ${row.unitName || row.chapterName}` })
+    } catch (e) {
+      setNote({ text: e.message || 'Could not save', bad: true })
+    } finally {
+      setBusyKey('')
+    }
+  }
 
   // Sections carry their own ids — no refs to thread through four components.
   const jump = (sectionId) => document.getElementById(sectionId)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
@@ -983,6 +1056,12 @@ export default function StudentProgressPage() {
 
       <Header student={student} enrolled={enrolled} />
 
+      {note && (
+        <div className={`fixed bottom-5 right-5 z-50 px-4 py-2.5 rounded-xl shadow-lg text-sm text-white ${note.bad ? 'bg-rose-600' : 'bg-gray-900'}`}>
+          {note.text}
+        </div>
+      )}
+
       {!student.caLevel && !student.caSubjects.length && (
         <div className="bg-amber-50 border border-amber-200 rounded-2xl px-4 py-3 text-xs text-amber-800">
           No level or papers are set for this student, so the syllabus below lists only the chapters they have
@@ -1019,7 +1098,7 @@ export default function StudentProgressPage() {
           hint={forecast.estimatedCompletion ? `Projected from ${forecast.basedOn} completed topics` : undefined} />
       </div>
 
-      <SyllabusSection syllabus={syllabus} thresholdPercent={thresholdPercent} />
+      <SyllabusSection syllabus={syllabus} thresholdPercent={thresholdPercent} onMark={markRow} busyKey={busyKey} />
       <AttendanceSection studentId={id} />
       <TestMarksSection studentId={id} bySubject={tests.bySubject} />
       <LecturesSection studentId={id} />
