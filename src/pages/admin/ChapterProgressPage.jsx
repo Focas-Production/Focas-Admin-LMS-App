@@ -213,7 +213,7 @@ export default function ChapterProgressPage() {
             className={`${selectCls} w-52`} />
           <label className="flex items-center gap-1.5 text-xs text-gray-500 select-none">
             <input type="checkbox" checked={onlyPending} onChange={(e) => setOnlyPending(e.target.checked)} />
-            only students with pending
+            Hide fully completed students
           </label>
         </div>
       </div>
