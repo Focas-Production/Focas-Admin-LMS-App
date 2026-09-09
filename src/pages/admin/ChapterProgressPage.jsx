@@ -49,7 +49,12 @@ function cellLook(cell) {
   switch (cell?.status) {
     case 'completed': return { glyph: '✓', cls: 'bg-emerald-100 text-emerald-700', title: 'Completed through live classes' }
     case 'attended':  return { glyph: '◐', cls: 'bg-amber-100 text-amber-700',     title: 'Attended a class, not completed yet' }
-    case 'allotted':  return { glyph: '·', cls: 'bg-indigo-100 text-indigo-700',   title: 'A class is allotted' }
+    case 'allotted':
+      // On the roster of a class that already ran without them ⇒ missed;
+      // otherwise the class is still to come.
+      return cell.missed > 0
+        ? { glyph: '✗', cls: 'bg-rose-100 text-rose-600', title: `Missed ${cell.missed} class${cell.missed !== 1 ? 'es' : ''} (absent)` }
+        : { glyph: '·', cls: 'bg-indigo-100 text-indigo-700', title: 'A class is allotted, not held yet' }
     default:          return { glyph: '',  cls: 'bg-gray-50 text-gray-300',        title: 'No class yet' }
   }
 }
@@ -58,7 +63,8 @@ const LEGEND = [
   { cls: 'bg-emerald-600 text-white',       glyph: '✓', text: 'Completed (hand-set)' },
   { cls: 'bg-emerald-100 text-emerald-700', glyph: '✓', text: 'Completed via classes' },
   { cls: 'bg-amber-100 text-amber-700',     glyph: '◐', text: 'Attended' },
-  { cls: 'bg-indigo-100 text-indigo-700',   glyph: '·', text: 'Allotted' },
+  { cls: 'bg-indigo-100 text-indigo-700',   glyph: '·', text: 'Class allotted' },
+  { cls: 'bg-rose-100 text-rose-600',       glyph: '✗', text: 'Missed class' },
   { cls: 'bg-rose-500 text-white',          glyph: '✗', text: 'Absent (hand-set)' },
   { cls: 'bg-gray-50 text-gray-300 border border-gray-200', glyph: '', text: 'Nothing yet' },
 ]
@@ -124,7 +130,7 @@ export default function ChapterProgressPage() {
         method: 'PUT',
         body: JSON.stringify({ subjectId, chapterId: col.chapterId, unitId: col.unitId, mark: next }),
       })
-      const fresh = { status: res.status, manualMark: res.manualMark, markedByName: res.markedByName }
+      const fresh = { status: res.status, manualMark: res.manualMark, markedByName: res.markedByName, missed: res.missed || 0 }
       setState((prev) => ({
         ...prev,
         grid: prev.grid && {
