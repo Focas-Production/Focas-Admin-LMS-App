@@ -16,9 +16,20 @@ import { apiFetch } from '../../api'
 import { groupLabel } from '../../lib/ca'
 
 const SUBJECT_KEY = 'admin-chapter-progress-subject'
+const ATTEMPT_KEY = 'admin-chapter-progress-attempt'
+// Filter value for students with no attempt set yet.
+const NO_ATTEMPT = '__none__'
 
 // What a click turns the current mark into.
 const NEXT_MARK = { none: 'completed', completed: 'absent', absent: null }
+
+// "Jan 2027" → sortable number, so batches list in calendar order.
+const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
+function attemptOrder(a) {
+  const m = String(a || '').trim().match(/^([a-z]{3})[a-z]*\s+(\d{4})$/i)
+  if (!m) return Number.MAX_SAFE_INTEGER
+  return Number(m[2]) * 12 + Math.max(0, MONTHS.indexOf(m[1].toLowerCase()))
+}
 
 // Column headings are tight, so drop the "Chapter 3:" / "Unit 2:" prefixes and
 // shorten "Accounting Standard 12" to "AS 12". Full names stay in the tooltip.
@@ -59,6 +70,9 @@ export default function ChapterProgressPage() {
   const [subjectId, setSubjectId] = useState(() => { try { return localStorage.getItem(SUBJECT_KEY) || '' } catch { return '' } })
   const [query, setQuery] = useState('')
   const [onlyPending, setOnlyPending] = useState(false)
+  // Batch = the student's attempt ("Jan 2027"); '' shows every batch.
+  const [attempt, setAttempt] = useState(() => { try { return localStorage.getItem(ATTEMPT_KEY) || '' } catch { return '' } })
+  useEffect(() => { try { localStorage.setItem(ATTEMPT_KEY, attempt) } catch { /* private mode */ } }, [attempt])
 
   // `key` is the subject the held grid belongs to — anything else is loading.
   const [state, setState] = useState({ key: null, grid: null, error: '' })
@@ -144,8 +158,24 @@ export default function ChapterProgressPage() {
   const q = query.trim().toLowerCase()
   const rows = (grid?.students || [])
     .map((s) => ({ ...s, done: columns.filter((c) => isDone(s.cells[c.key])).length }))
+    .filter((s) => !attempt || (attempt === NO_ATTEMPT ? !s.caAttempt : s.caAttempt === attempt))
     .filter((s) => !q || s.name.toLowerCase().includes(q) || s.phoneNumber.includes(q))
     .filter((s) => !onlyPending || s.done < columns.length)
+
+  // The batches present among this paper's students, in calendar order, with
+  // a count each; "no batch set" listed last when anyone lacks one.
+  const attempts = useMemo(() => {
+    const counts = new Map()
+    let none = 0
+    for (const s of grid?.students || []) {
+      if (s.caAttempt) counts.set(s.caAttempt, (counts.get(s.caAttempt) || 0) + 1)
+      else none += 1
+    }
+    const list = [...counts.entries()].sort((a, b) => attemptOrder(a[0]) - attemptOrder(b[0]))
+      .map(([value, n]) => ({ value, label: `${value} · ${n}` }))
+    if (none) list.push({ value: NO_ATTEMPT, label: `No batch set · ${none}` })
+    return list
+  }, [grid])
 
   const byLevel = useMemo(() => {
     const m = new Map()
@@ -174,6 +204,10 @@ export default function ChapterProgressPage() {
                 ))}
               </optgroup>
             ))}
+          </select>
+          <select value={attempt} onChange={(e) => setAttempt(e.target.value)} className={selectCls} title="Batch (attempt)">
+            <option value="">All batches{grid ? ` · ${grid.students.length}` : ''}</option>
+            {attempts.map((a) => <option key={a.value} value={a.value}>{a.label}</option>)}
           </select>
           <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search student or phone…"
             className={`${selectCls} w-52`} />
@@ -241,7 +275,7 @@ export default function ChapterProgressPage() {
               <tbody>
                 {!rows.length && (
                   <tr><td colSpan={columns.length + 2} className="px-4 py-8 text-center text-gray-400">
-                    {grid.students.length ? 'No student matches.' : 'No student is enrolled for this paper yet.'}
+                    {grid.students.length ? 'No student matches this batch, search or filter.' : 'No student is enrolled for this paper yet.'}
                   </td></tr>
                 )}
                 {rows.map((s) => (
@@ -252,7 +286,7 @@ export default function ChapterProgressPage() {
                         {s.name || s.phoneNumber}
                       </Link>
                       <p className="text-[10px] text-gray-400 truncate">
-                        {s.phoneNumber}{s.caGroup ? ` · ${groupLabel(s.caGroup)}` : ''}{!s.enrolled ? ' · not enrolled here' : ''}
+                        {s.phoneNumber}{s.caAttempt ? ` · ${s.caAttempt}` : ''}{s.caGroup ? ` · ${groupLabel(s.caGroup)}` : ''}{!s.enrolled ? ' · not enrolled here' : ''}
                       </p>
                     </td>
                     {columns.map((c) => {
