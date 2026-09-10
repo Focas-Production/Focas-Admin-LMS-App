@@ -34,7 +34,12 @@ export default function TestSeriesAdminPage() {
         ))}
       </div>
 
-      {section === 'notifications' && <NotifySettings showToast={showToast} />}
+      {section === 'notifications' && (
+        <>
+          <NotifySettings showToast={showToast} />
+          <OverdueReminderSettings showToast={showToast} />
+        </>
+      )}
       {section === 'mentors'      && <MentorAssignments showToast={showToast} />}
       {section === 'submissions'  && <SubmissionsView showToast={showToast} />}
     </div>
@@ -84,6 +89,7 @@ function SubmissionsView({ showToast }) {
   const [totals, setTotals] = useState(null)
   const [counts, setCounts] = useState(null)             // status totals for mentor+date filter
   const [marksBreakdown, setMarksBreakdown] = useState([]) // per-totalMarks corrected/pending
+  const [overdueDays, setOverdueDays] = useState(7)      // evaluation deadline (Settings.mentorReminder)
   const [page, setPage] = useState(1)
   const [limit, setLimit] = useState(20)
   const [total, setTotal] = useState(0)
@@ -112,6 +118,7 @@ function SubmissionsView({ showToast }) {
         setTotalPages(d.totalPages || 1)
         setCounts(d.statusCounts || null)
         setMarksBreakdown(d.marksBreakdown || [])
+        if (d.overdueDays) setOverdueDays(d.overdueDays)
       })
       .catch(() => { setRows([]); setTotal(0); setTotalPages(1); setCounts(null); setMarksBreakdown([]) })
   }
@@ -254,6 +261,7 @@ function SubmissionsView({ showToast }) {
                 <th className="text-center font-semibold px-3 py-2.5">Marks</th>
                 <th className="text-left font-semibold px-3 py-2.5">Mentor</th>
                 <th className="text-left font-semibold px-3 py-2.5">{evaluatedMode ? 'Evaluated on' : 'Submitted on'}</th>
+                {!evaluatedMode && <th className="text-center font-semibold px-3 py-2.5">Waiting</th>}
                 <th className="text-center font-semibold px-3 py-2.5">Status</th>
               </tr>
             </thead>
@@ -291,6 +299,11 @@ function SubmissionsView({ showToast }) {
                   <td className="px-3 py-2.5 text-gray-600 whitespace-nowrap text-xs">
                     {fmtDay(evaluatedMode ? r.evaluatedAt : r.createdAt)}
                   </td>
+                  {!evaluatedMode && (
+                    <td className="px-3 py-2.5 text-center whitespace-nowrap text-xs">
+                      <WaitingCell row={r} overdueDays={overdueDays} />
+                    </td>
+                  )}
                   <td className="px-3 py-2.5 text-center">
                     <span className={`px-2 py-0.5 rounded-full text-xs font-semibold ${STATUS_STYLE[r.status] || ''}`}>
                       {r.status}{r.assignedVia ? ` · ${r.assignedVia}` : ''}
@@ -330,6 +343,22 @@ function SubmissionsView({ showToast }) {
 
       {detailId && <SubmissionDetailModal id={detailId} onClose={() => setDetailId(null)} />}
     </section>
+  )
+}
+
+// How long a paper has been waiting. Assigned papers count from the moment the mentor
+// got them (assignedAt); pool papers from submission. Red once past the deadline.
+function WaitingCell({ row, overdueDays }) {
+  if (row.status === 'completed') return <span className="text-gray-300">—</span>
+  const since = row.status === 'assigned' ? (row.assignedAt || row.createdAt) : row.createdAt
+  const d = daysSince(since)
+  if (d == null) return <span className="text-gray-300">—</span>
+  const overdue = row.status === 'assigned' && d >= overdueDays
+  return (
+    <span className={`font-semibold ${overdue ? 'text-red-600' : 'text-gray-500'}`}
+      title={row.status === 'assigned' ? `With mentor for ${d} day(s)` : `In pool for ${d} day(s)`}>
+      {d}d{overdue ? ' · overdue' : ''}
+    </span>
   )
 }
 
@@ -437,11 +466,12 @@ function MentorFilter({ stats, totals, value, onChange, status, onStatus, evalua
       <div className="flex gap-2 overflow-x-auto pb-1 -mx-1 px-1">
         <MentorChip active={value === ''} onClick={() => onChange('')} evaluatedOnly={evaluatedOnly}
           avatar="ALL" label="All mentors" sub={`${stats.filter(s => !isPool(s)).length} mentors`}
-          done={totals?.completed || 0} incomplete={(totals?.pending || 0) + (totals?.assigned || 0)} />
+          done={totals?.completed || 0} incomplete={(totals?.pending || 0) + (totals?.assigned || 0)}
+          overdue={totals?.overdue || 0} />
         {visible.map(s => (
           <MentorChip key={mentorKey(s)} active={value === mentorKey(s)} onClick={() => onChange(mentorKey(s))}
             avatar={initials(s)} label={mentorLabel(s)} sub={mentorSub(s)} pool={isPool(s)} evaluatedOnly={evaluatedOnly}
-            done={s.completed} incomplete={incompleteOf(s)} />
+            done={s.completed} incomplete={incompleteOf(s)} overdue={s.overdue || 0} />
         ))}
         {!visible.length && <p className="text-xs text-gray-400 py-3">No mentor matches “{query}”.</p>}
       </div>
@@ -454,7 +484,7 @@ function MentorFilter({ stats, totals, value, onChange, status, onStatus, evalua
   )
 }
 
-function MentorChip({ avatar, label, sub, done, incomplete, active, pool, evaluatedOnly, onClick }) {
+function MentorChip({ avatar, label, sub, done, incomplete, overdue = 0, active, pool, evaluatedOnly, onClick }) {
   const total = done + incomplete
   const pct = total ? Math.round((done / total) * 100) : 0
   return (
@@ -489,6 +519,11 @@ function MentorChip({ avatar, label, sub, done, incomplete, active, pool, evalua
             <span className="font-semibold text-emerald-700">{done} done</span>
             <span className={`font-semibold ${incomplete ? 'text-amber-600' : 'text-gray-300'}`}>{incomplete} pending</span>
           </div>
+          {overdue > 0 && (
+            <span className="mt-1.5 inline-block px-1.5 py-0.5 rounded-md bg-red-100 text-red-700 text-[10px] font-bold">
+              ⚠ {overdue} overdue
+            </span>
+          )}
         </>
       )}
     </button>
@@ -520,6 +555,11 @@ function MentorSummary({ stat, status, onStatus, onClear, evaluatedOnly }) {
                 ? `${stat.completed} paper${stat.completed === 1 ? '' : 's'} corrected in the selected range${stat.phoneNumber ? ` · ${stat.phoneNumber}` : ''}`
                 : `${pct}% evaluated · ${incompleteOf(stat)} still pending${stat.phoneNumber ? ` · ${stat.phoneNumber}` : ''}`}
           </p>
+          {!evaluatedOnly && stat.overdue > 0 && (
+            <span className="mt-1 inline-block px-2 py-0.5 rounded-md bg-red-100 text-red-700 text-[11px] font-bold">
+              ⚠ {stat.overdue} paper{stat.overdue === 1 ? '' : 's'} past the evaluation deadline
+            </span>
+          )}
         </div>
         <button onClick={onClear} className="text-xs font-semibold text-gray-500 hover:text-gray-800">✕ Clear</button>
       </div>
@@ -550,6 +590,12 @@ function fmtDay(d) {
   if (!d) return '—'
   const dt = new Date(d)
   return Number.isNaN(dt.getTime()) ? '—' : dt.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })
+}
+// Whole days elapsed since `d` (null when missing/invalid).
+function daysSince(d) {
+  if (!d) return null
+  const t = new Date(d).getTime()
+  return Number.isNaN(t) ? null : Math.max(0, Math.floor((Date.now() - t) / 86400000))
 }
 
 // Open a file/document in a new tab. The blank window is opened synchronously (before
@@ -642,6 +688,12 @@ function SubmissionDetailModal({ id, onClose }) {
               </InfoRow>
               <InfoRow label="Started at">{fmtDate(sub.startedAt)}</InfoRow>
               <InfoRow label="Submitted at">{fmtDate(sub.submittedAt || sub.createdAt)}</InfoRow>
+              {sub.assignedAt && (
+                <InfoRow label="Assigned at">
+                  {fmtDate(sub.assignedAt)}
+                  {sub.status === 'assigned' && <span className="ml-2 text-xs text-gray-400">({daysSince(sub.assignedAt)} days with mentor)</span>}
+                </InfoRow>
+              )}
             </div>
 
             {/* Documents */}
@@ -799,6 +851,182 @@ function NotifySettings({ showToast }) {
         {saving ? 'Saving…' : 'Save Notifications'}
       </button>
     </section>
+  )
+}
+
+// ───────────────────────── mentor overdue-evaluation reminder ─────────────────────────
+// Daily 09:00 IST WhatsApp nudge to mentors sitting on papers past the deadline.
+// Settings live in Settings.mentorReminder; the run itself is server-side
+// (services/mentorReminderService.js). Preview = dry run, sends nothing.
+const RUN_STATUS = {
+  'would-send':         ['Will be messaged',        'bg-indigo-100 text-indigo-700'],
+  'sent':               ['Sent',                    'bg-emerald-100 text-emerald-700'],
+  'failed':             ['Failed',                  'bg-red-100 text-red-700'],
+  'already-sent-today': ['Already sent today',      'bg-gray-100 text-gray-600'],
+  'skipped-not-mentor': ['Not a mentor — reassign', 'bg-amber-100 text-amber-700'],
+}
+
+function OverdueReminderSettings({ showToast }) {
+  const [enabled, setEnabled] = useState(false)
+  const [days, setDays] = useState('7')
+  const [orig, setOrig] = useState({ enabled: false, days: '7' })
+  const [lastRun, setLastRun] = useState(null)    // { at, summary }
+  const [saving, setSaving] = useState(false)
+  const [busy, setBusy] = useState('')            // 'preview' | 'send' | ''
+  const [result, setResult] = useState(null)      // summary from the last preview / send
+
+  const applySettings = (s) => {
+    const mr = s?.mentorReminder || {}
+    const e = !!mr.enabled
+    const d = String(mr.overdueDays ?? 7)
+    setEnabled(e); setDays(d); setOrig({ enabled: e, days: d })
+    setLastRun(mr.lastRunAt ? { at: mr.lastRunAt, summary: mr.lastRunSummary || {} } : null)
+  }
+  useEffect(() => { apiFetch('/api/admin/settings').then(applySettings).catch(() => {}) }, [])
+
+  const dirty = enabled !== orig.enabled || days !== orig.days
+  const daysValid = /^\d+$/.test(days) && Number(days) >= 1 && Number(days) <= 60
+
+  const save = async () => {
+    if (!daysValid) return showToast('Days must be a whole number between 1 and 60')
+    setSaving(true)
+    try {
+      const s = await apiFetch('/api/admin/settings', {
+        method: 'PUT',
+        body: JSON.stringify({ mentorReminder: { enabled, overdueDays: Number(days) } }),
+      })
+      applySettings(s)
+      showToast('Reminder settings saved')
+    } catch (e) { showToast(e.message) } finally { setSaving(false) }
+  }
+
+  const run = async (dryRun) => {
+    if (!dryRun) {
+      const n = result?.dryRun ? result.mentors.filter(m => m.status === 'would-send').length : null
+      const msg = n != null
+        ? `Send WhatsApp reminders now to ${n} mentor${n === 1 ? '' : 's'}?`
+        : 'Send WhatsApp reminders now to every mentor with overdue papers?'
+      if (!window.confirm(msg)) return
+    }
+    setBusy(dryRun ? 'preview' : 'send')
+    try {
+      const s = await apiFetch('/api/admin/test-submissions/reminders/run', {
+        method: 'POST', body: JSON.stringify({ dryRun }),
+      })
+      setResult(s)
+      if (!dryRun) {
+        showToast(s.skippedReason ? `Not sent: ${s.skippedReason}` : `Sent ${s.sent} · failed ${s.failed}`)
+        apiFetch('/api/admin/settings').then(applySettings).catch(() => {})
+      }
+    } catch (e) { showToast(e.message) } finally { setBusy('') }
+  }
+
+  const inp = 'w-24 px-3 py-2 text-sm border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-400'
+  const btn = 'px-4 py-2 rounded-xl text-sm font-semibold disabled:opacity-50 disabled:cursor-not-allowed'
+
+  return (
+    <section className="bg-white rounded-2xl shadow-sm p-5 mb-6">
+      <div className="flex items-center justify-between gap-3 mb-1">
+        <h2 className="font-bold text-gray-900">Overdue Evaluation Reminder</h2>
+        <label className="inline-flex items-center gap-2 text-sm font-semibold text-gray-700 cursor-pointer">
+          <input type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)} className="w-4 h-4 accent-indigo-600" />
+          {enabled ? 'On' : 'Off'}
+        </label>
+      </div>
+      <p className="text-xs text-gray-400 mb-4">
+        Every day at <strong>9:00 AM IST</strong>, each mentor holding at least one paper assigned more than the days below ago and still
+        not evaluated gets <strong>one</strong> WhatsApp message with their pending and overdue counts. It repeats daily until nothing is
+        overdue. No overdue papers → no message. Template name: <code className="bg-gray-100 px-1 rounded">WATI_MENTOR_OVERDUE_TEMPLATE</code> in <code className="bg-gray-100 px-1 rounded">server/.env</code>.
+      </p>
+
+      <div className="flex flex-wrap items-end gap-3 mb-4">
+        <div>
+          <label className="block text-xs font-semibold text-gray-600 mb-1">Overdue after (days)</label>
+          <input type="number" min="1" max="60" value={days} onChange={e => setDays(e.target.value)} className={inp} />
+        </div>
+        <button onClick={save} disabled={!dirty || saving || !daysValid}
+          className="px-5 py-2.5 rounded-xl bg-indigo-600 text-white font-semibold text-sm hover:bg-indigo-700 disabled:bg-gray-300">
+          {saving ? 'Saving…' : 'Save Reminder Settings'}
+        </button>
+        {dirty && <span className="text-xs text-amber-600 pb-3">Unsaved changes</span>}
+      </div>
+
+      <p className="text-xs text-gray-500 mb-3">
+        Last run: {lastRun
+          ? `${fmtDate(lastRun.at)} · ${lastRun.summary.sent || 0} sent · ${lastRun.summary.failed || 0} failed · ${lastRun.summary.mentorsWithOverdue || 0} mentor(s) with ${lastRun.summary.overduePapers || 0} overdue paper(s)`
+          : 'never'}
+      </p>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <button onClick={() => run(true)} disabled={!!busy || dirty}
+          className={`${btn} border border-gray-200 text-gray-700 hover:bg-gray-50`}>
+          {busy === 'preview' ? 'Checking…' : '👁 Preview (sends nothing)'}
+        </button>
+        <button onClick={() => run(false)} disabled={!!busy || dirty}
+          className={`${btn} bg-emerald-600 text-white hover:bg-emerald-700`}>
+          {busy === 'send' ? 'Sending…' : '📤 Send now'}
+        </button>
+        {dirty && <span className="text-xs text-gray-400">Save your changes before previewing or sending.</span>}
+      </div>
+
+      {result && <ReminderRunResult result={result} />}
+    </section>
+  )
+}
+
+function ReminderRunResult({ result }) {
+  const eligible = result.mentors.filter(m => m.status !== 'skipped-not-mentor')
+  return (
+    <div className="mt-4 rounded-xl border border-gray-200 bg-gray-50/70 p-3.5">
+      <p className="text-sm font-semibold text-gray-900">
+        {result.dryRun ? 'Preview' : 'Result'} · {result.date} · deadline {result.overdueDays} days
+      </p>
+      <p className="text-xs text-gray-500 mt-0.5">
+        {result.mentorsWithOverdue} mentor{result.mentorsWithOverdue === 1 ? '' : 's'} with {result.overduePapers} overdue paper{result.overduePapers === 1 ? '' : 's'}
+        {result.dryRun
+          ? ` · ${eligible.filter(m => m.status === 'would-send').length} would be messaged`
+          : ` · ${result.sent} sent · ${result.failed} failed · ${result.alreadySent} already sent today`}
+      </p>
+      {!result.templateConfigured && (
+        <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mt-2">
+          The WhatsApp template is not configured on the server, so real sends are skipped. Add <code>WATI_MENTOR_OVERDUE_TEMPLATE</code> to <code>server/.env</code>.
+        </p>
+      )}
+      {result.skippedReason && (
+        <p className="text-xs text-amber-700 mt-2">Skipped: {result.skippedReason}</p>
+      )}
+      {result.mentors.length > 0 && (
+        <div className="overflow-x-auto mt-3">
+          <table className="w-full text-xs">
+            <thead className="text-gray-500">
+              <tr>
+                <th className="text-left font-semibold px-2 py-1.5">Mentor</th>
+                <th className="text-left font-semibold px-2 py-1.5">Phone</th>
+                <th className="text-center font-semibold px-2 py-1.5">Pending</th>
+                <th className="text-center font-semibold px-2 py-1.5">Overdue</th>
+                <th className="text-center font-semibold px-2 py-1.5">Oldest</th>
+                <th className="text-left font-semibold px-2 py-1.5">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {result.mentors.map(m => {
+                const [label, cls] = RUN_STATUS[m.status] || [m.status, 'bg-gray-100 text-gray-600']
+                return (
+                  <tr key={m.mentorId} className="border-t border-gray-200/70">
+                    <td className="px-2 py-1.5 text-gray-800 font-medium">{m.name || '—'}</td>
+                    <td className="px-2 py-1.5 text-gray-500">{m.phone || '—'}</td>
+                    <td className="px-2 py-1.5 text-center text-gray-700">{m.pending}</td>
+                    <td className="px-2 py-1.5 text-center font-bold text-red-600">{m.overdue}</td>
+                    <td className="px-2 py-1.5 text-center text-gray-700">{m.oldestDays}d</td>
+                    <td className="px-2 py-1.5"><span className={`px-2 py-0.5 rounded-full font-semibold ${cls}`}>{label}</span></td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
   )
 }
 
