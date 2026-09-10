@@ -773,11 +773,11 @@ function NotifySettings({ showToast }) {
   return (
     <section className="bg-white rounded-2xl shadow-sm p-5 mb-6">
       <h2 className="font-bold text-gray-900 mb-1">WhatsApp Notifications</h2>
-      <p className="text-xs text-gray-400 mb-4">Template names are configured in <code className="bg-gray-100 px-1 rounded">server/.env</code>. Add the staff who should be alerted when a student submits a test.</p>
+      <p className="text-xs text-gray-400 mb-4">Template names are configured in <code className="bg-gray-100 px-1 rounded">server/.env</code>. When a student submits a test, the paper's assigned mentor is alerted on WhatsApp. The staff below are alerted <strong>only</strong> when no mentor is mapped to that level &amp; subject and the paper lands in the unassigned pool.</p>
 
       <div className="mb-4">
         <div className="flex items-center justify-between mb-2">
-          <label className="text-xs font-semibold text-gray-600">Staff recipients (notified when a student submits)</label>
+          <label className="text-xs font-semibold text-gray-600">Staff recipients (notified only for unassigned papers)</label>
           <button onClick={addRow} className="text-xs font-semibold text-indigo-600 hover:text-indigo-700">+ Add member</button>
         </div>
         {recipients.length === 0 && <p className="text-xs text-gray-400">No recipients yet — add one above.</p>}
