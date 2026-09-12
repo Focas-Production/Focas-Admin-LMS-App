@@ -38,6 +38,66 @@ const fmtHour = (h) => {
 
 const dayKey = (d) => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`
 
+// Two-letter initials for the mentor badge ("Pavaharini" → "PA", "Hari Prasath" → "HP").
+const initials = (name = '') => {
+  const parts = String(name).trim().split(/\s+/).filter(Boolean)
+  if (!parts.length) return '?'
+  return (parts.length > 1 ? parts[0][0] + parts[1][0] : parts[0].slice(0, 2)).toUpperCase()
+}
+
+// What a cell wears once it knows its class — saved, or still being set up:
+//   SUBJECT                                          (small caps, dark)
+//   Chapter · Unit                                   (the headline)
+//   [PA] Mentor · Room 1 · Track 1 — 6–9 AM Slot     (coords in small print — admins
+//                                                     need them, students never see them)
+// Module-level so React keeps the same element type across board re-renders.
+function CellHead({ subject, chapter, unit, mentor, slotTitle, live, roster }) {
+  return (
+    <div className="mb-2">
+      {/* Subject + live pill. Right padding keeps clear of the copy/paste buttons. */}
+      <div className="flex items-center gap-1.5 min-w-0 pr-12">
+        <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-indigo-600 truncate min-w-0"
+          title={subject || ''}>
+          {subject || 'No subject'}
+        </span>
+        {live && (
+          <span className="inline-flex items-center gap-1 rounded-full bg-red-50 border border-red-200 px-1.5 py-px text-[9px] font-bold uppercase tracking-wide text-red-600 shrink-0">
+            <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />live
+          </span>
+        )}
+      </div>
+      <p className="mt-0.5 pr-12 text-[13px] font-semibold text-gray-900 leading-snug break-words"
+        title={[chapter, unit].filter(Boolean).join(' · ')}>
+        {chapter || 'No chapter'}
+        {unit ? <span className="text-gray-500 font-medium"> · {unit}</span> : null}
+      </p>
+      {/* One line carries all three: mentor left, the head-count centred between
+          them, room/track/slot coords right. The count rides here rather than on
+          a line of its own so a booked cell stays three lines tall. */}
+      <div className="mt-1.5 flex items-center gap-1.5 min-w-0">
+        <span className="inline-flex items-center justify-center w-[18px] h-[18px] rounded-full bg-indigo-600 text-white text-[8px] font-bold tracking-wide shrink-0 ring-2 ring-indigo-100">
+          {initials(mentor)}
+        </span>
+        {/* Name and coords each take an equal share and truncate, so the count
+            sits centred between them and nothing overlaps in the narrow
+            both-rooms columns. Full text of either is on hover. */}
+        <span className="flex-1 min-w-0 truncate text-[11px] font-semibold text-gray-800" title={mentor || ''}>
+          {mentor || '…'}
+        </span>
+        {roster}
+        {slotTitle && (
+          <span className="flex-1 min-w-0 flex justify-end">
+            <span className="truncate rounded-md bg-gray-100 border border-gray-200 px-1.5 py-0.5 text-[9.5px] font-medium text-gray-500"
+              title={slotTitle}>
+              {slotTitle}
+            </span>
+          </span>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // studiesSubject (enrollment ↔ paper scoping) lives in lib/rosterFilter.js now,
 // shared with the advanced filter engine so the two can't drift.
 
@@ -102,6 +162,7 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
   const [weekOpen, setWeekOpen]   = useState({})   // extra-week index → false when its dropdown is folded
   const [dragId, setDragId]     = useState(null)   // student id being dragged
   const [overCell, setOverCell] = useState(null)   // cell id under the drag
+  const [openCells, setOpenCells] = useState({})   // cellId → true when its saved roster is expanded
   const [staged, setStaged]     = useState({})     // cellId → { day, slot, col, ids: [] }
   const [review, setReview]     = useState(false)  // review-and-save modal open
   const [clipboard, setClipboard] = useState(null) // { ids: [], from: label } — copied roster
@@ -174,12 +235,23 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
     [classes],
   )
 
+  // Which track a class sits on. Keyed by the room/track KEYS, never the LiveKit
+  // room name: that name carries LIVEKIT_ROOM_PREFIX as it was when the class was
+  // booked, so a class booked by one environment and read by another (prod DB,
+  // dev prefix) would read as an empty slot and invite a double booking. Same
+  // rule the server uses in listLiveHostableTracks. Older classes saved before
+  // the keys existed fall back to the room name.
+  const trackKeyOf = (c) =>
+    (c?.room?.key && c?.track?.key) ? `${c.room.key}/${c.track.key}` : c?.roomName
+  const colKey = (col) => `${col.roomKey}/${col.trackKey}`
+
   // The class occupying one (day, slot, track) cell, if any.
-  const cellClass = (day, slot, roomName) => {
+  const cellClass = (day, slot, col) => {
     const s = new Date(day.getFullYear(), day.getMonth(), day.getDate(), slot.startHour)
     const e = new Date(day.getFullYear(), day.getMonth(), day.getDate(), slot.endHour)
+    const want = colKey(col)
     return active.find(c =>
-      c.roomName === roomName &&
+      (trackKeyOf(c) === want || c.roomName === col.roomName) &&
       new Date(c.scheduledStart) < e && new Date(c.scheduledEnd) > s,
     ) || null
   }
@@ -388,7 +460,7 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
     const out = []
     for (const sib of trackCols) {
       if (sib.roomKey !== col.roomKey || sib.roomName === col.roomName) continue
-      const cls = cellClass(day, slot, sib.roomName)
+      const cls = cellClass(day, slot, sib)
       const saved = !!cls && (cls.allowedStudents || []).map(String).includes(sid)
       const parked = (staged[`${dayKey(day)}/${slot.key}/${sib.roomName}`]?.ids || []).includes(sid)
       if (saved || parked) out.push({ trackLabel: sib.trackLabel, saved })
@@ -452,7 +524,7 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
     const id = String(studentId)
     if (!byId.get(id)) return
     const cellId = `${dayKey(day)}/${slot.key}/${col.roomName}`
-    const existing = cellClass(day, slot, col.roomName)
+    const existing = cellClass(day, slot, col)
     // Already allotted on the saved class, or already staged → nothing to do.
     if (existing && (existing.allowedStudents || []).map(String).includes(id)) return
     const alreadyStaged = (staged[cellId]?.ids || []).includes(id)
@@ -478,7 +550,7 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
 
   const copyCell = (day, slot, col) => {
     const cellId = `${dayKey(day)}/${slot.key}/${col.roomName}`
-    const existing = cellClass(day, slot, col.roomName)
+    const existing = cellClass(day, slot, col)
     const ids = [...new Set([
       ...(existing?.allowedStudents || []).map(String),
       ...(staged[cellId]?.ids || []),
@@ -496,7 +568,7 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
   const pasteCell = (day, slot, col) => {
     if (!clipboard?.ids?.length && !clipboard?.meta) return
     const cellId = `${dayKey(day)}/${slot.key}/${col.roomName}`
-    const existing = cellClass(day, slot, col.roomName)
+    const existing = cellClass(day, slot, col)
     const already = new Set((existing?.allowedStudents || []).map(String))
     if (clipboard.ids?.length) {
       const cur = staged[cellId]?.ids || []
@@ -569,7 +641,7 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
     const siblings = trackCols.filter(c =>
       c.roomKey === cell.col.roomKey && c.roomName !== cell.col.roomName)
     for (const sib of siblings) {
-      const cls = cellClass(cell.day, cell.slot, sib.roomName)
+      const cls = cellClass(cell.day, cell.slot, sib)
       if (cls?.host?.userId) {
         return { id: String(cls.host.userId), name: cls.host.name || 'assigned mentor', from: `${sib.trackLabel} · ${cls.title}` }
       }
@@ -578,7 +650,7 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
       if (otherId === cellId) break   // only cells listed before this one lock it
       if (dayKey(other.day) !== dayKey(cell.day) || other.slot.key !== cell.slot.key) continue
       if (other.col.roomKey !== cell.col.roomKey || other.col.roomName === cell.col.roomName) continue
-      if (cellClass(other.day, other.slot, other.col.roomName)) continue   // saved class → caught above
+      if (cellClass(other.day, other.slot, other.col)) continue   // saved class → caught above
       const h = newMeta[otherId]?.hostUserId
       if (h) {
         const host = (hosts || []).find(x => String(x.id) === String(h))
@@ -591,7 +663,7 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
       if (otherId === cellId || !other?.col || !other?.hostUserId) continue
       if (dayKey(other.day) !== dayKey(cell.day) || other.slot.key !== cell.slot.key) continue
       if (other.col.roomKey !== cell.col.roomKey || other.col.roomName === cell.col.roomName) continue
-      if (cellClass(other.day, other.slot, other.col.roomName)) continue   // saved class → caught above
+      if (cellClass(other.day, other.slot, other.col)) continue   // saved class → caught above
       const host = (hosts || []).find(x => String(x.id) === String(other.hostUserId))
       return { id: String(other.hostUserId), name: host?.name || 'same mentor', from: other.col.trackLabel }
     }
@@ -602,7 +674,7 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
     // Prefill title + host for every cell that will become a NEW class.
     const meta = {}
     for (const [cellId, cell] of Object.entries(staged)) {
-      if (!cellClass(cell.day, cell.slot, cell.col.roomName)) {
+      if (!cellClass(cell.day, cell.slot, cell.col)) {
         const locked = roomLockedHost(cellId, cell)
         meta[cellId] = newMeta[cellId] || {
           title: `${cell.col.roomLabel} · ${cell.col.trackLabel} — ${cell.slot.name}`,
@@ -619,7 +691,7 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
     const failures = []
     for (const [cellId, cell] of Object.entries(staged)) {
       const { day, slot, col, ids } = cell
-      const existing = cellClass(day, slot, col.roomName)
+      const existing = cellClass(day, slot, col)
       try {
         if (existing) {
           const merged = [...new Set([...(existing.allowedStudents || []).map(String), ...ids])]
@@ -886,7 +958,22 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
                         </tr>
                       </thead>
                       <tbody>
-                        {SLOTS.map(slot => (
+                        {SLOTS.map(slot => {
+                          // A slot closes for NEW classes the moment it STARTS, not
+                          // when it ends — the server rejects a start in the past
+                          // (validateSchedule, 5-minute grace), so an already-started
+                          // slot could only ever fail at Review & save. Once closed
+                          // with nothing in any room/track, the whole row goes.
+                          // A row keeps its place if it still holds a class or a
+                          // staged drop, so neither is hidden behind the cut.
+                          const slotPast =
+                            new Date(day.getFullYear(), day.getMonth(), day.getDate(), slot.startHour).getTime()
+                              < Date.now() - 5 * 60 * 1000
+                          const rowHasClass = visibleCols.some(col => cellClass(day, slot, col))
+                          const rowHasStaged = visibleCols.some(col =>
+                            (staged[`${k}/${slot.key}/${col.roomName}`]?.ids || []).length > 0)
+                          if (slotPast && !rowHasClass && !rowHasStaged) return null
+                          return (
                           <tr key={slot.key}>
                             <td className="align-top px-2 py-1.5">
                               <p className="text-xs font-semibold text-gray-700 whitespace-nowrap">
@@ -895,13 +982,24 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
                               <p className="text-[10px] text-gray-400 whitespace-nowrap">{slot.name}</p>
                             </td>
                             {visibleCols.map(col => {
-                              const cls = cellClass(day, slot, col.roomName)
+                              const cls = cellClass(day, slot, col)
                               const cellId = `${k}/${slot.key}/${col.roomName}`
                               const cellStaged = staged[cellId]?.ids || []
                               const cfgReady = !cls && cellMetaReady(cellId)
                               const hovered = overCell === cellId
-                              const past = !cls &&
-                                new Date(day.getFullYear(), day.getMonth(), day.getDate(), slot.endHour) < new Date()
+                              // Same cut-off as the row above: a started slot can no
+                              // longer take a NEW class, so it refuses drops. Adding
+                              // students to a class already saved here still works.
+                              const past = !cls && slotPast
+                              // A saved roster stays folded until the card is clicked.
+                              // Staged chips are NEVER folded away — they're unconfirmed
+                              // work the admin still has to see and confirm or discard.
+                              const savedIds = cls?.allowedStudents || []
+                              const rosterOpen = !!openCells[cellId]
+                              // A double booking must never hide behind the fold — the
+                              // head-count goes red so the warning survives collapsing.
+                              const savedClash =
+                                savedIds.some(id => roomClashesFor(day, slot, col, id).length > 0)
                               // While a student is being dragged, the cells
                               // outside their slot availability fade so the
                               // right ones stand out. The drop still works —
@@ -916,19 +1014,26 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
                                   onDragOver={e => { if (past) return; e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; setOverCell(cellId) }}
                                   onDragLeave={() => setOverCell(o => (o === cellId ? null : o))}
                                   onDrop={e => { if (past) return; e.preventDefault(); stageDrop(day, slot, col, e.dataTransfer.getData('text/plain')) }}>
-                                  <div className={`relative rounded-xl border p-1.5 transition-colors ${cfgReady ? 'min-h-[92px]' : 'min-h-[52px]'}
+                                  <div className={past && !cls
+                                    // An empty, already-over slot never got a class — nothing to
+                                    // show or act on, so it collapses to a quiet sliver instead of
+                                    // a full card wasting the same space as a real one.
+                                    ? 'min-h-[18px]'
+                                    : `relative rounded-xl border px-2.5 py-2 transition-colors ${cfgReady ? 'min-h-[92px]' : 'min-h-[52px]'}
                                     ${hovered ? (clashDrop ? 'border-red-400 bg-red-50' : offSlot ? 'border-amber-400 bg-amber-50' : 'border-indigo-400 bg-indigo-50')
                                       : cellStaged.length ? 'border-amber-300 bg-amber-50/60'
-                                      : cls ? 'border-gray-200 bg-gray-50'
-                                      : past ? 'border-gray-100 bg-gray-50/50'
+                                      : cls ? 'border-gray-200 bg-white shadow-sm'
+                                      : cfgReady ? 'border-gray-200 bg-white'
                                       : 'border-dashed border-gray-200'}
                                     ${offSlot && !hovered ? 'opacity-40' : ''}`}>
-                                    {past && !cls ? (
-                                      <p className="text-[10px] text-gray-300 pt-3 text-center">slot over</p>
-                                    ) : (
+                                    {past && !cls ? null : (
                                       <>
+                                        {/* Accent stripe: indigo once saved, amber while still being set up. */}
+                                        {(cls || cfgReady) && (
+                                          <span className={`absolute left-0 top-2 bottom-2 w-[3px] rounded-r-full ${cls ? 'bg-indigo-500' : 'bg-amber-400'}`} />
+                                        )}
                                         {/* copy the roster + setup here / paste the copied one */}
-                                        <div className="absolute top-1 right-1 flex gap-0.5">
+                                        <div className="absolute top-1.5 right-1.5 flex gap-0.5">
                                           {(cls || cellStaged.length > 0 || cfgReady) && (
                                             <button type="button" onClick={() => copyCell(day, slot, col)}
                                               title="Copy this slot's students, mentor & subject (chapter is picked fresh on paste)"
@@ -945,19 +1050,34 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
                                           )}
                                         </div>
                                         {cls && (
-                                          <>
-                                            <p className="text-[11px] font-semibold text-gray-800 truncate" title={cls.title}>
-                                              {cls.status === 'live' && <span className="text-red-500">● </span>}{cls.title}
-                                            </p>
-                                            {/* Saved classes wear the same line as configured cells:
-                                                Mentor - Subject - Chapter - Unit, wrapping when long. */}
-                                            <p className="text-[11px] font-semibold leading-snug break-words mb-1">
-                                              <span className="text-gray-900">🧑‍🏫 {cls.host?.name}</span>
-                                              <span className="text-indigo-700">
-                                                {cls.subject?.name ? ` - ${cls.subject.name}` : ''}{cls.chapter?.name ? ` - ${cls.chapter.name}` : ''}{cls.unit?.name ? ` - ${cls.unit.name}` : ''}
-                                              </span>
-                                            </p>
-                                          </>
+                                          // Saved classes wear the same block as configured cells:
+                                          // Subject / Chapter · Unit / Mentor, then the room-track-slot
+                                          // coords in small print. Clicking the head folds the roster
+                                          // open or shut — a booked class is a headline first, its
+                                          // 15-odd student chips only when you ask for them.
+                                          <button type="button"
+                                            onClick={() => setOpenCells(o => ({ ...o, [cellId]: !o[cellId] }))}
+                                            title={rosterOpen ? 'Hide students' : 'Show students'}
+                                            className="block w-full text-left">
+                                            <CellHead
+                                              subject={cls.subject?.name} chapter={cls.chapter?.name} unit={cls.unit?.name}
+                                              mentor={cls.host?.name} slotTitle={cls.title} live={cls.status === 'live'}
+                                              roster={savedIds.length > 0 ? (
+                                                // A span, not a button — the whole head is already
+                                                // the toggle, and a button inside a button is invalid.
+                                                <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md border shrink-0 ${
+                                                  savedClash
+                                                    ? 'bg-red-100 border-red-300'
+                                                    : 'bg-indigo-50 border-indigo-200'}`}>
+                                                  <span className="text-[10px] leading-none">{savedClash ? '⚠' : '👥'}</span>
+                                                  <span className={`text-[13px] font-bold leading-none ${
+                                                    savedClash ? 'text-red-700' : 'text-indigo-700'}`}>
+                                                    {savedIds.length}
+                                                  </span>
+                                                  <span className="text-[9px] leading-none text-gray-400">{rosterOpen ? '▾' : '▸'}</span>
+                                                </span>
+                                              ) : null} />
+                                          </button>
                                         )}
                                         {/* Setup worn by a not-yet-saved cell: who teaches it and
                                             what — so drops land somewhere with a face and a topic. */}
@@ -969,20 +1089,16 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
                                           return (
                                             <button type="button" onClick={() => openSetup(day, slot, col)}
                                               title="Change mentor / subject / chapter"
-                                              className="block w-full text-left mb-1">
-                                              {/* One flowing line: Tutor - Subject - Chapter - Unit.
-                                                  No truncate — when it can't fit, it wraps instead. */}
-                                              <p className="text-[11px] font-semibold leading-snug break-words">
-                                                <span className="text-gray-900">🧑‍🏫 {hostName(m.hostUserId)}</span>
-                                                <span className="text-indigo-700">
-                                                  {subj ? ` - ${subj.name}` : ''}{chap ? ` - ${chap.name}` : ''}{unit ? ` - ${unit.name}` : ''}
-                                                </span>
-                                              </p>
+                                              className="block w-full text-left">
+                                              <CellHead
+                                                subject={subj?.name} chapter={chap?.name} unit={unit?.name}
+                                                mentor={hostName(m.hostUserId)}
+                                                slotTitle={m.title || `${col.roomLabel} · ${col.trackLabel} — ${slot.name}`} />
                                             </button>
                                           )
                                         })()}
                                         <div className="flex flex-wrap gap-1">
-                                          {(cls?.allowedStudents || []).map(id => {
+                                          {(rosterOpen ? savedIds : []).map(id => {
                                             // Saved students are checked too, so an old
                                             // double booking (or a staged sibling drop)
                                             // shows up on both chips, not just the new one.
@@ -1000,7 +1116,7 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
                                               </span>
                                             )
                                           })}
-                                          {cls && !(cls.allowedStudents || []).length && !cellStaged.length && (
+                                          {cls && !savedIds.length && !cellStaged.length && (
                                             <span className="text-[10px] text-gray-400 italic">open to all</span>
                                           )}
                                           {cellStaged.map(id => {
@@ -1052,7 +1168,8 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
                               )
                             })}
                           </tr>
-                        ))}
+                          )
+                        })}
                       </tbody>
                     </table>
                   </div>
@@ -1283,7 +1400,7 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
 
             <div className="space-y-3">
               {Object.entries(staged).map(([cellId, cell]) => {
-                const existing = cellClass(cell.day, cell.slot, cell.col.roomName)
+                const existing = cellClass(cell.day, cell.slot, cell.col)
                 const meta = newMeta[cellId] || {}
                 return (
                   <div key={cellId} className="border border-gray-100 rounded-xl p-3">

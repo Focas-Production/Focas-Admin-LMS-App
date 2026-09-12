@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { apiFetch } from '../../api'
 import AttendanceModal from '../../components/AttendanceModal'
 import SubmissionsModal from '../../components/SubmissionsModal'
@@ -19,6 +19,23 @@ function runDuration(c) {
   const m = Math.round((end - new Date(c.startedAt).getTime()) / 60000)
   const label = m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${m % 60}m`
   return c.status === 'live' ? `${label} so far` : label
+}
+
+// Day heading for the upcoming list: "Today" / "Tomorrow" for the two that
+// matter most at a glance, an explicit date beyond that.
+function dayLabel(d) {
+  const day = new Date(d); day.setHours(0, 0, 0, 0)
+  const today = new Date(); today.setHours(0, 0, 0, 0)
+  const diff = Math.round((day - today) / 86400000)
+  if (diff === 0) return 'Today'
+  if (diff === 1) return 'Tomorrow'
+  if (diff === -1) return 'Yesterday'
+  return day.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'short' })
+}
+
+const dayStamp = (d) => {
+  const x = new Date(d)
+  return `${x.getFullYear()}-${x.getMonth()}-${x.getDate()}`
 }
 
 const STATUS_STYLE = {
@@ -49,6 +66,68 @@ export default function LiveClassesPage() {
   const [allot, setAllot]     = useState(null)        // { cls, students, loading, saving } edit modal
   const [subjects, setSubjects] = useState([])        // subject → chapters → units tree, for the edit modal
   const [edit, setEdit]       = useState(null)        // { cls, hostUserId, subjectId, chapterId, unitId, saving, error }
+  const [pastOpen, setPastOpen] = useState(false)     // history section folded by default
+  const [listRoom, setListRoom] = useState('all')     // room filter over the whole list
+
+  // "Both rooms" leads because it is the default — the selected option should be
+  // the first thing read, then the two ways to narrow it.
+  const roomChoices = useMemo(
+    () => [{ key: 'all', label: 'Both rooms' }, ...(rooms || []).map(r => ({ key: r.key, label: r.label }))],
+    [rooms],
+  )
+
+  // The list reads in the order an admin actually works it: what is running
+  // right now, then what is coming next (soonest first, broken by day), and
+  // finished/cancelled classes parked in their own section at the bottom.
+  // The server's own order is not relied on — the sort is explicit here.
+  const listGroups = useMemo(() => {
+    // The room filter governs EVERY section, not just upcoming — asking for
+    // Room 2 and still being shown Room 1's live class would be a lie.
+    const all = (classes || []).filter(c => listRoom === 'all' || c.room?.key === listRoom)
+    const byStart = (a, b) => new Date(a.scheduledStart) - new Date(b.scheduledStart)
+
+    const live = all.filter(c => c.status === 'live').sort(byStart)
+    const upcoming = all.filter(c => c.status === 'scheduled').sort(byStart)
+    // History reads newest first — the most recent class is the one being asked about.
+    const past = all
+      .filter(c => c.status === 'ended' || c.status === 'cancelled')
+      .sort((a, b) => new Date(b.scheduledStart) - new Date(a.scheduledStart))
+
+    // Upcoming is split into day runs so "this evening" and "tomorrow" are
+    // readable without checking each date.
+    const days = []
+    for (const c of upcoming) {
+      const key = dayStamp(c.scheduledStart)
+      if (days[days.length - 1]?.key !== key) {
+        days.push({ key, label: dayLabel(c.scheduledStart), items: [] })
+      }
+      days[days.length - 1].items.push(c)
+    }
+    return { live, upcoming, upcomingDays: days, past }
+  }, [classes, listRoom])
+
+  // Flattened into section headers + rows so one table keeps every column aligned.
+  const listRows = useMemo(() => {
+    const { live, upcoming, upcomingDays, past } = listGroups
+    const rows = []
+    if (live.length) {
+      rows.push({ kind: 'section', key: 'sec-live', label: 'Happening now', count: live.length, tone: 'live' })
+      live.forEach(c => rows.push({ kind: 'class', cls: c }))
+    }
+    // Always rendered, even at zero — it carries the room filter, which must stay
+    // reachable to undo a filter that emptied the list.
+    rows.push({ kind: 'section', key: 'sec-up', label: 'Upcoming', count: upcoming.length, filter: true })
+    upcomingDays.forEach(d => {
+      rows.push({ kind: 'day', key: `day-${d.key}`, label: d.label, count: d.items.length })
+      d.items.forEach(c => rows.push({ kind: 'class', cls: c }))
+    })
+    if (!upcoming.length) rows.push({ kind: 'empty', key: 'up-none' })
+    if (past.length) {
+      rows.push({ kind: 'section', key: 'sec-past', label: 'Ended & cancelled', count: past.length, fold: true })
+      if (pastOpen) past.forEach(c => rows.push({ kind: 'class', cls: c }))
+    }
+    return rows
+  }, [listGroups, pastOpen])
 
   const copyTrackLink = async (roomKey, trackKey) => {
     const url = trackUrl(roomKey, trackKey)
@@ -304,7 +383,71 @@ export default function LiveClassesPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {classes.map((c) => (
+              {listRows.map((row) => {
+                // Section band: "Happening now" / "Upcoming" / the folded history.
+                if (row.kind === 'section') return (
+                  <tr key={row.key} className="bg-gray-50/80">
+                    <td colSpan={7} className="px-4 py-2">
+                      {row.fold ? (
+                        <button type="button" onClick={() => setPastOpen(o => !o)}
+                          className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-wider text-gray-500 hover:text-indigo-600">
+                          <span className="text-gray-400">{pastOpen ? '▾' : '▸'}</span>
+                          {row.label}
+                          <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-gray-200 text-gray-600 normal-case tracking-normal">
+                            {row.count}
+                          </span>
+                        </button>
+                      ) : (
+                        <div className="flex items-center justify-between gap-3">
+                          <span className={`flex items-center gap-2 text-[11px] font-bold uppercase tracking-wider ${
+                            row.tone === 'live' ? 'text-red-600' : 'text-indigo-600'}`}>
+                            {row.tone === 'live' && <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />}
+                            {row.label}
+                            <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full normal-case tracking-normal ${
+                              row.tone === 'live' ? 'bg-red-100 text-red-700' : 'bg-indigo-100 text-indigo-700'}`}>
+                              {row.count}
+                            </span>
+                          </span>
+                          {/* Room filter — sits here but governs every section below AND above. */}
+                          {row.filter && roomChoices.length > 1 && (
+                            <span className="inline-flex bg-white border border-gray-200 rounded-lg p-0.5 shadow-sm">
+                              {roomChoices.map(opt => (
+                                <button key={opt.key} type="button" onClick={() => setListRoom(opt.key)}
+                                  title={`Show ${opt.label} in every section`}
+                                  className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition-colors ${
+                                    listRoom === opt.key
+                                      ? 'bg-indigo-600 text-white'
+                                      : 'text-gray-500 hover:text-indigo-600'}`}>
+                                  {opt.label}
+                                </button>
+                              ))}
+                            </span>
+                          )}
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                )
+                if (row.kind === 'empty') return (
+                  <tr key={row.key}>
+                    <td colSpan={7} className="px-4 py-6 text-center text-sm text-gray-400">
+                      {listRoom === 'all'
+                        ? 'Nothing scheduled ahead.'
+                        : `Nothing scheduled ahead in ${roomChoices.find(r => r.key === listRoom)?.label || 'this room'}.`}
+                    </td>
+                  </tr>
+                )
+                // Day break inside Upcoming — "Today", "Tomorrow", then the date.
+                if (row.kind === 'day') return (
+                  <tr key={row.key}>
+                    <td colSpan={7} className="px-4 pt-3 pb-1">
+                      <span className="text-[11px] font-bold text-gray-700">{row.label}</span>
+                      <span className="ml-2 text-[10px] text-gray-400">{row.count} class{row.count > 1 ? 'es' : ''}</span>
+                    </td>
+                  </tr>
+                )
+                const c = row.cls
+                return (
                 <tr key={c._id}>
                   <td className="px-4 py-3">
                     <p className="font-medium text-gray-900">{c.title}</p>
@@ -385,7 +528,8 @@ export default function LiveClassesPage() {
                     )}
                   </td>
                 </tr>
-              ))}
+                )
+              })}
             </tbody>
           </table>
         </div>
