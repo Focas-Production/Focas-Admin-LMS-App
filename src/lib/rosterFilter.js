@@ -7,6 +7,7 @@
 //   date    → { days } | { date } | { from, to }        (per operator)
 //   enum    → array of option keys
 //   subject → array of subjectId strings (any/all/none of them)
+//   enrolled → { keys, subjectIds }  keys are ENROLMENT_OPTIONS; subjectIds narrow 'subjects'
 //   slot    → { slot, days }        days '' = on any day | 'weekdays' | 'weekends'
 //   chapter → { subjectId, chapterId, unitId }   (the operator names the status)
 //
@@ -101,6 +102,23 @@ export function studiesSubject(student, subject) {
   return !subject.group || subject.group === student.caGroup
 }
 
+// What a student is enrolled for, as one key — the same choice the Users page's
+// Enrollment modal makes. An explicit paper list wins over the group. A level
+// with no group picked (Foundation has none) covers every paper in it, which is
+// the scope "both groups" gives, so it counts as 'both'.
+export const ENROLMENT_OPTIONS = [
+  { key: 'group1',   label: 'Group 1' },
+  { key: 'group2',   label: 'Group 2' },
+  { key: 'both',     label: 'Both groups' },
+  { key: 'subjects', label: 'Specific subjects' },
+  { key: 'none',     label: 'Nothing yet' },
+]
+export function enrolmentOf(student) {
+  if ((student.caSubjects || []).length) return 'subjects'
+  if (!student.caLevel) return 'none'
+  return student.caGroup === 'group1' || student.caGroup === 'group2' ? student.caGroup : 'both'
+}
+
 const TEXT_OPS = [
   { key: 'contains',     label: 'contains' },
   { key: 'not_contains', label: "doesn't contain" },
@@ -138,10 +156,8 @@ export const FIELD_DEFS = [
     get: s => s.caGroup },
   { key: 'attempt',    label: 'Attempt',         kind: 'enum',
     options: ATTEMPT_OPTIONS, get: s => s.caAttempt },
-  { key: 'enrolledFor', label: 'Enrolled for',   kind: 'enum',
-    options: [{ key: 'group', label: 'Whole group' }, { key: 'subjects', label: 'Specific subjects' }, { key: 'none', label: 'Nothing yet' }],
-    ops: ENUM_OPS.filter(o => o.key !== 'not_set'),
-    get: s => (s.caSubjects || []).length ? 'subjects' : s.caLevel ? 'group' : 'none' },
+  { key: 'enrolledFor', label: 'Enrolled for',   kind: 'enrolled',
+    options: ENROLMENT_OPTIONS, ops: ENUM_OPS.filter(o => o.key !== 'not_set') },
   { key: 'subject',    label: 'Studies subject', kind: 'subject',
     ops: [
       { key: 'any',  label: 'includes any of' },
@@ -184,6 +200,7 @@ export function newCondition(fieldKey = 'name') {
     field: fieldKey,
     op: ops[0]?.key || 'is',
     value: def.kind === 'enum' || def.kind === 'subject' ? []
+      : def.kind === 'enrolled' ? { keys: [], subjectIds: [] }
       : def.kind === 'slot' ? { slot: '', days: '' }
       : def.kind === 'chapter' ? { subjectId: '', chapterId: '', unitId: '' }
       : def.kind === 'date' ? {}
@@ -202,6 +219,13 @@ export function normalizeCondition(c) {
   // Slot rows saved while availability was per paper carried a subjectId;
   // nothing is per paper any more, so they become "that slot, on any day".
   if (kind === 'slot') return { ...c, value: { slot: c.value?.slot || '', days: c.value?.days || '' } }
+  // "Enrolled for" rows saved before the group split were a plain key list, and
+  // 'group' meant any group — which is now all three group keys.
+  if (kind === 'enrolled') {
+    const raw = Array.isArray(c.value) ? { keys: c.value } : (c.value || {})
+    const keys = (raw.keys || []).flatMap(k => k === 'group' ? ['group1', 'group2', 'both'] : [k])
+    return { ...c, value: { keys: [...new Set(keys)], subjectIds: (raw.subjectIds || []).map(String) } }
+  }
   return c
 }
 
@@ -225,6 +249,8 @@ export function conditionComplete(c) {
       return c.op === 'not_set' || (Array.isArray(c.value) && c.value.length > 0)
     case 'subject':
       return subjectIdsOf(c).length > 0
+    case 'enrolled':
+      return (c.value?.keys || []).length > 0
     case 'slot':
       return c.op === 'not_set' ? true : !!c.value?.slot
     case 'chapter':
@@ -312,6 +338,19 @@ export function evalCondition(student, c, ctx) {
       return op === 'any' ? hits > 0
         : op === 'all' ? hits === docs.length
         : hits === 0
+    }
+    case 'enrolled': {
+      const mine = enrolmentOf(student)
+      let hit = c.value.keys.includes(mine)
+      // Papers ticked under "Specific subjects" narrow it to students enrolled
+      // for any of them. Papers deleted since (or not loaded yet) are skipped;
+      // with none left, every specific-subjects student matches.
+      const picked = (c.value.subjectIds || []).filter(id => ctx.subjectsById?.has(String(id)))
+      if (hit && mine === 'subjects' && picked.length) {
+        const own = new Set(student.caSubjects.map(String))
+        hit = picked.some(id => own.has(String(id)))
+      }
+      return c.op === 'is' ? hit : !hit
     }
     case 'slot': {
       // days '' = either day type counts; otherwise only the picked one.

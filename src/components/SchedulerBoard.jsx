@@ -1621,7 +1621,7 @@ function AdvancedFilterPanel({
         <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100">
           <div>
             <h2 className="text-sm font-bold text-gray-900">Filter students</h2>
-            <p className="text-[11px] text-gray-400">{matchCount} match{matchCount === 1 ? 'es' : ''} · conditions apply live, all must hold</p>
+            <p className="text-[11px] text-gray-400">{matchCount} {matchCount === 1 ? 'match' : 'matches'} · conditions apply live, all must hold</p>
           </div>
           <button onClick={onClose} className="text-gray-300 hover:text-gray-500 text-lg leading-none">✕</button>
         </div>
@@ -1784,30 +1784,48 @@ function ConditionRow({ cond, subjects, onChange, onRemove }) {
           </div>
         )}
 
-        {def.kind === 'subject' && (() => {
-          const picked = subjectIdsOf(cond)
+        {def.kind === 'enrolled' && (() => {
+          const { keys = [], subjectIds = [] } = cond.value || {}
+          const bySubjects = keys.includes('subjects')
           return (
-            <div className="space-y-1 max-h-44 overflow-y-auto pr-0.5">
-              {(subjects || []).map(s => {
-                const id = String(s._id)
-                const on = picked.includes(id)
-                return (
-                  <button key={id}
-                    onClick={() => onChange({ value: on ? picked.filter(v => v !== id) : [...picked, id] })}
-                    className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg border text-left text-xs ${
-                      on ? 'border-indigo-300 bg-indigo-50 text-indigo-800 font-medium' : 'border-gray-100 text-gray-600 hover:bg-gray-50'}`}>
-                    <span className={`w-3.5 h-3.5 rounded flex items-center justify-center text-[9px] font-bold flex-shrink-0 ${
-                      on ? 'bg-indigo-600 text-white' : 'border border-gray-300 text-transparent'}`}>✓</span>
-                    <span className="flex-1 truncate">{s.name}</span>
-                    <span className="text-[9px] text-gray-400 flex-shrink-0">
-                      {s.level}{s.group ? ` · ${s.group === 'group1' ? 'G1' : 'G2'}` : ''}
-                    </span>
-                  </button>
-                )
-              })}
+            <div className="space-y-1.5">
+              <div className="flex flex-wrap gap-1">
+                {def.options.map(o => {
+                  const on = keys.includes(o.key)
+                  return (
+                    <button key={o.key}
+                      // Unticking "Specific subjects" drops its papers too, so a
+                      // hidden pick can't come back when it's ticked again.
+                      onClick={() => onChange({ value: {
+                        keys: on ? keys.filter(v => v !== o.key) : [...keys, o.key],
+                        subjectIds: o.key === 'subjects' && on ? [] : subjectIds,
+                      } })}
+                      className={`text-[10px] font-bold px-2 py-1 rounded-md ${
+                        on ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>
+                      {o.label}
+                    </button>
+                  )
+                })}
+              </div>
+              {bySubjects && (
+                <>
+                  <p className="text-[10px] text-gray-400">
+                    {subjectIds.length
+                      ? `Enrolled for any of these ${subjectIds.length} paper${subjectIds.length !== 1 ? 's' : ''}`
+                      : 'Tick papers to narrow it — none ticked = any specific subjects'}
+                  </p>
+                  <SubjectChecklist subjects={subjects} picked={subjectIds}
+                    onChange={ids => onChange({ value: { keys, subjectIds: ids } })} />
+                </>
+              )}
             </div>
           )
         })()}
+
+        {def.kind === 'subject' && (
+          <SubjectChecklist subjects={subjects} picked={subjectIdsOf(cond)}
+            onChange={ids => onChange({ value: ids })} />
+        )}
 
         {def.kind === 'slot' && (
           <div className="space-y-1.5">
@@ -1857,6 +1875,32 @@ function ConditionRow({ cond, subjects, onChange, onRemove }) {
           </div>
         )}
       </div>
+    </div>
+  )
+}
+
+// Multi-pick paper list for condition rows; `picked` and onChange's argument
+// are arrays of subject id strings.
+function SubjectChecklist({ subjects, picked, onChange }) {
+  return (
+    <div className="space-y-1 max-h-44 overflow-y-auto pr-0.5">
+      {(subjects || []).map(s => {
+        const id = String(s._id)
+        const on = picked.includes(id)
+        return (
+          <button key={id}
+            onClick={() => onChange(on ? picked.filter(v => v !== id) : [...picked, id])}
+            className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg border text-left text-xs ${
+              on ? 'border-indigo-300 bg-indigo-50 text-indigo-800 font-medium' : 'border-gray-100 text-gray-600 hover:bg-gray-50'}`}>
+            <span className={`w-3.5 h-3.5 rounded flex items-center justify-center text-[9px] font-bold flex-shrink-0 ${
+              on ? 'bg-indigo-600 text-white' : 'border border-gray-300 text-transparent'}`}>✓</span>
+            <span className="flex-1 truncate">{s.name}</span>
+            <span className="text-[9px] text-gray-400 flex-shrink-0">
+              {s.level}{s.group ? ` · ${s.group === 'group1' ? 'G1' : 'G2'}` : ''}
+            </span>
+          </button>
+        )
+      })}
     </div>
   )
 }
