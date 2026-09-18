@@ -320,6 +320,8 @@ export default function LiveClassesPage() {
         </div>
       )}
 
+      <CameraRuleSettings />
+
       {/* Scheduler and the class list live in tabs, so neither buries the other. */}
       <div className="flex gap-1 mb-4">
         {[
@@ -923,4 +925,118 @@ function ChapterStatusPicker({ cls, selected, onChange }) {
       )}
     </div>
   )
+}
+
+
+// ───────────────────── "camera must be on" defaults ─────────────────────
+// The rule: while a mentor has it switched ON inside their class, a student
+// whose camera is off gets a countdown and is then removed from the room. The
+// numbers here are the DEFAULTS every class picks up the moment its host
+// switches the rule on — editing them never changes a class already running,
+// and the on/off switch inside the meeting always belongs to the mentor.
+// Server: utils/cameraRule.js + services/cameraRuleService.js.
+function CameraRuleSettings() {
+  const [open, setOpen] = useState(false)
+  const [defaultEnabled, setDefaultEnabled] = useState(false)
+  const [minutes, setMinutes] = useState('2')
+  const [strikes, setStrikes] = useState('3')
+  const [orig, setOrig] = useState(null)
+  const [saving, setSaving] = useState(false)
+  const [msg, setMsg] = useState('')
+
+  const apply = (s) => {
+    const c = s?.liveClassCamera || {}
+    const next = {
+      defaultEnabled: !!c.defaultEnabled,
+      minutes: String(Math.round(((c.graceSeconds ?? 120) / 60) * 100) / 100),
+      strikes: String(c.maxStrikes ?? 3),
+    }
+    setDefaultEnabled(next.defaultEnabled); setMinutes(next.minutes); setStrikes(next.strikes)
+    setOrig(next)
+  }
+  useEffect(() => { apiFetch('/api/admin/settings').then(apply).catch(() => {}) }, [])
+
+  const mins = Number(minutes)
+  const seconds = Math.round(mins * 60)
+  const minutesValid = Number.isFinite(mins) && seconds >= 15 && seconds <= 1800
+  const strikesValid = /^\d+$/.test(strikes) && Number(strikes) >= 0 && Number(strikes) <= 10
+  const dirty = !!orig && (defaultEnabled !== orig.defaultEnabled || minutes !== orig.minutes || strikes !== orig.strikes)
+
+  const save = async () => {
+    if (!minutesValid || !strikesValid) return
+    setSaving(true); setMsg('')
+    try {
+      const s = await apiFetch('/api/admin/settings', {
+        method: 'PUT',
+        body: JSON.stringify({ liveClassCamera: { defaultEnabled, graceSeconds: seconds, maxStrikes: Number(strikes) } }),
+      })
+      apply(s)
+      setMsg('Saved')
+    } catch (e) { setMsg(e.message || 'Could not save') } finally { setSaving(false) }
+  }
+
+  const inp = 'w-24 px-3 py-2 text-sm border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-400'
+
+  return (
+    <section className="bg-white rounded-2xl shadow-sm mb-4">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center gap-2 px-5 py-3 text-left">
+        <span className="font-bold text-gray-900 text-sm">📷 Camera rule for live classes</span>
+        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+          defaultEnabled ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-500'}`}>
+          {defaultEnabled ? 'ON by default' : 'OFF by default'}
+        </span>
+        <span className="text-xs text-gray-400">
+          {minutesValid ? `${fmtGrace(seconds)} to turn the camera on` : ''}
+        </span>
+        <span className="ml-auto text-gray-400 text-sm">{open ? '▴' : '▾'}</span>
+      </button>
+
+      {open && (
+        <div className="px-5 pb-5">
+          <p className="text-xs text-gray-400 mb-4">
+            When a mentor switches this on inside a class, every student whose camera is off gets the countdown below to
+            turn it on — then they are <strong>removed from the room</strong>. These are only the defaults each class starts
+            from: the on/off switch during the class is the <strong>mentor&rsquo;s</strong>, in their Participants panel, and so is
+            excusing a student who genuinely can&rsquo;t be on video. Changing anything here leaves classes already running
+            exactly as they are.
+          </p>
+
+          <label className="inline-flex items-center gap-2 text-sm font-semibold text-gray-700 cursor-pointer mb-4">
+            <input type="checkbox" checked={defaultEnabled} onChange={e => setDefaultEnabled(e.target.checked)} className="w-4 h-4 accent-indigo-600" />
+            Start every class with the rule ON
+            <span className="text-xs font-normal text-gray-400">(mentors can still switch it off)</span>
+          </label>
+
+          <div className="flex flex-wrap items-end gap-3 mb-3">
+            <div>
+              <label className="block text-xs font-semibold text-gray-600 mb-1">Time to turn the camera on (minutes)</label>
+              <input type="number" min="0.25" max="30" step="0.25" value={minutes} onChange={e => setMinutes(e.target.value)} className={inp} />
+              {!minutesValid && <p className="text-[10px] text-red-500 mt-1">15 seconds to 30 minutes</p>}
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-gray-600 mb-1">Removals before the mentor must let them back in</label>
+              <input type="number" min="0" max="10" value={strikes} onChange={e => setStrikes(e.target.value)} className={inp} />
+              {!strikesValid
+                ? <p className="text-[10px] text-red-500 mt-1">0 to 10</p>
+                : <p className="text-[10px] text-gray-400 mt-1">{Number(strikes) === 0 ? 'Always free to rejoin' : 'Then they need the mentor to re-admit them'}</p>}
+            </div>
+            <button onClick={save} disabled={!dirty || saving || !minutesValid || !strikesValid}
+              className="px-5 py-2.5 rounded-xl bg-indigo-600 text-white font-semibold text-sm hover:bg-indigo-700 disabled:bg-gray-300">
+              {saving ? 'Saving…' : 'Save camera rule'}
+            </button>
+            {dirty && <span className="text-xs text-amber-600 pb-3">Unsaved changes</span>}
+            {msg && <span className="text-xs text-gray-500 pb-3">{msg}</span>}
+          </div>
+        </div>
+      )}
+    </section>
+  )
+}
+
+function fmtGrace(seconds) {
+  const s = Number(seconds) || 0
+  if (s % 60 === 0) return `${s / 60} minute${s === 60 ? '' : 's'}`
+  return `${s} seconds`
 }
