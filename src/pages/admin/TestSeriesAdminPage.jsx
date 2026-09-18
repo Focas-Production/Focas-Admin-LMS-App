@@ -7,6 +7,7 @@ const SECTION_TABS = [
   ['notifications', 'WhatsApp Notifications'],
   ['mentors',      'Mentor Assignments'],
   ['submissions',  'Submissions'],
+  ['hidden',       'Hidden Papers'],
 ]
 
 export default function TestSeriesAdminPage() {
@@ -41,7 +42,8 @@ export default function TestSeriesAdminPage() {
         </>
       )}
       {section === 'mentors'      && <MentorAssignments showToast={showToast} />}
-      {section === 'submissions'  && <SubmissionsView showToast={showToast} />}
+      {section === 'submissions'  && <SubmissionsView showToast={showToast} onShowHidden={() => setSection('hidden')} />}
+      {section === 'hidden'       && <HiddenPapersView showToast={showToast} />}
     </div>
   )
 }
@@ -77,7 +79,7 @@ function monthBounds(offset) {
 }
 const MONTH_PRESETS = [[0, 'This month'], [-1, 'Last month']]
 
-function SubmissionsView({ showToast }) {
+function SubmissionsView({ showToast, onShowHidden }) {
   const [status, setStatus] = useState('')
   const [mentorFilter, setMentorFilter] = useState('')   // '' | mentorId | 'unassigned'
   const [dateBy, setDateBy] = useState('submitted')      // 'submitted' | 'evaluated'
@@ -95,6 +97,8 @@ function SubmissionsView({ showToast }) {
   const [total, setTotal] = useState(0)
   const [totalPages, setTotalPages] = useState(1)
   const [detailId, setDetailId] = useState(null)   // submission opened in the detail modal
+  const [hideRow, setHideRow] = useState(null)     // submission in the "Hide paper" dialog
+  const [hiddenCount, setHiddenCount] = useState(0) // hidden papers — excluded from everything here
 
   const evaluatedMode = dateBy === 'evaluated'
 
@@ -118,6 +122,7 @@ function SubmissionsView({ showToast }) {
         setTotalPages(d.totalPages || 1)
         setCounts(d.statusCounts || null)
         setMarksBreakdown(d.marksBreakdown || [])
+        setHiddenCount(d.hiddenCount || 0)
         if (d.overdueDays) setOverdueDays(d.overdueDays)
       })
       .catch(() => { setRows([]); setTotal(0); setTotalPages(1); setCounts(null); setMarksBreakdown([]) })
@@ -160,6 +165,16 @@ function SubmissionsView({ showToast }) {
     } catch (e) { showToast(e.message) }
   }
 
+  // A hidden paper leaves this list and every count, so refresh both. If it was the
+  // last row on a later page, step back a page (the effect reloads the list).
+  const onHidden = () => {
+    setHideRow(null)
+    showToast('Paper hidden — restore it any time from Hidden Papers')
+    if (rows?.length === 1 && page > 1) setPage(p => p - 1)
+    else load()
+    loadStats()
+  }
+
   const selected = mentorFilter ? (stats || []).find(s => mentorKey(s) === mentorFilter) : null
 
   const rangeStart = total === 0 ? 0 : (page - 1) * limit + 1
@@ -187,7 +202,7 @@ function SubmissionsView({ showToast }) {
       <p className="text-xs text-gray-400 mb-4">
         {evaluatedMode
           ? 'Papers counted by the date the mentor corrected them — use this with a month range to work out each mentor’s payout.'
-          : 'Read-only overview. Assign a pending paper to a mentor manually, or let it sit in the pool for self-claim.'}
+          : 'Assign a pending paper to a mentor manually, or let it sit in the pool for self-claim. Hide a paper that should not be evaluated (e.g. the student uploaded the wrong PDF).'}
       </p>
 
       {/* Date filter — by submission date (workload) or evaluation date (payout) */}
@@ -232,6 +247,13 @@ function SubmissionsView({ showToast }) {
       {/* Corrected vs pending totals — follows the mentor + date filters (not the status tab) */}
       {counts && <TotalsBar counts={counts} evaluatedOnly={evaluatedMode} />}
 
+      {hiddenCount > 0 && (
+        <p className="-mt-2 mb-4 text-xs text-gray-500">
+          {hiddenCount} hidden paper{hiddenCount === 1 ? ' is' : 's are'} not counted anywhere on this page.{' '}
+          <button onClick={onShowHidden} className="font-semibold text-indigo-600 hover:text-indigo-700">View hidden papers →</button>
+        </p>
+      )}
+
       {/* Per-paper-marks breakdown (25 / 50 / 100 mark papers) */}
       {marksBreakdown.length > 0 && <MarksBreakdown items={marksBreakdown} evaluatedOnly={evaluatedMode} />}
 
@@ -263,6 +285,7 @@ function SubmissionsView({ showToast }) {
                 <th className="text-left font-semibold px-3 py-2.5">{evaluatedMode ? 'Evaluated on' : 'Submitted on'}</th>
                 {!evaluatedMode && <th className="text-center font-semibold px-3 py-2.5">Waiting</th>}
                 <th className="text-center font-semibold px-3 py-2.5">Status</th>
+                <th className="px-3 py-2.5"><span className="sr-only">Actions</span></th>
               </tr>
             </thead>
             <tbody>
@@ -309,6 +332,9 @@ function SubmissionsView({ showToast }) {
                       {r.status}{r.assignedVia ? ` · ${r.assignedVia}` : ''}
                     </span>
                   </td>
+                  <td className="px-3 py-2.5 text-right" onClick={e => e.stopPropagation()}>
+                    <HideButton onClick={() => setHideRow(r)} />
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -341,7 +367,268 @@ function SubmissionsView({ showToast }) {
         </div>
       )}
 
-      {detailId && <SubmissionDetailModal id={detailId} onClose={() => setDetailId(null)} />}
+      {detailId && (
+        <SubmissionDetailModal id={detailId} onClose={() => setDetailId(null)}
+          onHide={(sub) => { setDetailId(null); setHideRow(sub) }} />
+      )}
+      {hideRow && <HideDialog row={hideRow} onClose={() => setHideRow(null)} onHidden={onHidden} />}
+    </section>
+  )
+}
+
+// ───────────────────────── hide / restore ─────────────────────────
+// "Hide" is this page's delete: the paper and its files are kept, but it drops out of
+// every list and count (mentor queue, workload, payout, reminders, the student's
+// table/report and attempt count). Restorable from the Hidden Papers section.
+const HIDE_REASONS = ['Wrong PDF uploaded', 'Duplicate submission', 'Blank or unreadable answer sheet']
+const HIDE_REASON_MAX = 200
+
+function EyeOffIcon({ className = 'w-3.5 h-3.5' }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94" />
+      <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19" />
+      <path d="M14.12 14.12a3 3 0 1 1-4.24-4.24" />
+      <line x1="1" y1="1" x2="23" y2="23" />
+    </svg>
+  )
+}
+
+function HideButton({ onClick }) {
+  return (
+    <button onClick={onClick} title="Hide this paper — it is kept and can be restored from Hidden Papers"
+      className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-semibold text-gray-500 hover:text-rose-700 hover:bg-rose-50">
+      <EyeOffIcon /> Hide
+    </button>
+  )
+}
+
+// Confirm + reason for hiding one paper. `row` is a list row or the full detail —
+// both carry the snapshot fields and a populated mentor.
+function HideDialog({ row, onClose, onHidden }) {
+  const [reason, setReason] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const valid = reason.trim().length >= 3
+
+  const submit = async () => {
+    if (!valid || busy) return
+    setBusy(true); setError('')
+    try {
+      await apiFetch(`/api/admin/test-submissions/${row._id}/hide`, {
+        method: 'POST', body: JSON.stringify({ reason: reason.trim() }),
+      })
+      onHidden()
+    } catch (e) {
+      setError(e.message || 'Could not hide this paper')
+      setBusy(false)
+    }
+  }
+
+  const mentorName = row.mentor?.name || row.mentor?.phoneNumber || 'the mentor'
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/40" onClick={busy ? undefined : onClose}>
+      <div role="dialog" aria-modal="true" aria-labelledby="hide-paper-title"
+        className="bg-white rounded-2xl w-full max-w-md max-h-[90vh] overflow-y-auto shadow-2xl" onClick={e => e.stopPropagation()}>
+        <div className="px-5 pt-5 pb-4">
+          <h2 id="hide-paper-title" className="font-bold text-gray-900">Hide this paper?</h2>
+
+          <div className="mt-3 bg-gray-50 rounded-xl px-4 py-3 text-sm">
+            <p className="font-semibold text-gray-900">{row.studentName || 'Student'}{row.studentPhone ? <span className="font-normal text-gray-500"> · {row.studentPhone}</span> : null}</p>
+            <p className="text-xs text-gray-600 mt-0.5">{[row.subject, row.chapter, row.fileName].filter(Boolean).join(' · ')}</p>
+            <span className={`inline-block mt-1.5 px-2 py-0.5 rounded-full text-[11px] font-semibold ${STATUS_STYLE[row.status] || ''}`}>
+              {row.status}{row.status !== 'pending' && row.mentor ? ` · ${mentorName}` : ''}
+            </span>
+          </div>
+
+          {row.status === 'completed' && (
+            <p className="mt-3 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+              Already evaluated by {mentorName}{row.awardedMarks != null ? ` (${row.awardedMarks}/${row.totalMarks})` : ''}.
+              Hiding it also takes it out of their evaluated count (payout) and out of the student’s marks.
+            </p>
+          )}
+
+          <ul className="mt-3 space-y-1 text-xs text-gray-600 list-disc pl-4">
+            <li>{row.status === 'assigned' ? `It leaves ${mentorName}’s queue and` : 'It leaves'} every count — pending, mentor workload, payout and reminders.</li>
+            <li>The student gets this attempt back and can submit this test again.</li>
+            <li>Nothing is deleted. You can restore it any time from <strong>Hidden Papers</strong>.</li>
+          </ul>
+
+          <label htmlFor="hide-reason" className="block text-xs font-semibold text-gray-600 mt-4 mb-1.5">Reason</label>
+          <div className="flex flex-wrap gap-1.5 mb-2">
+            {HIDE_REASONS.map(r => (
+              <button key={r} type="button" onClick={() => setReason(r)}
+                className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition-colors ${
+                  reason === r ? 'border-indigo-500 bg-indigo-50 text-indigo-700' : 'border-gray-200 text-gray-600 hover:bg-gray-50'
+                }`}>{r}</button>
+            ))}
+          </div>
+          <textarea id="hide-reason" value={reason} onChange={e => setReason(e.target.value)} maxLength={HIDE_REASON_MAX} rows={2}
+            placeholder="Why is this paper being hidden?"
+            className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-400 resize-none" />
+          <p className="text-[10px] text-gray-400 text-right">{reason.length}/{HIDE_REASON_MAX}</p>
+
+          {error && <p className="mt-1 text-xs text-red-600">{error}</p>}
+        </div>
+
+        <div className="flex justify-end gap-2 px-5 py-3.5 border-t border-gray-100 bg-gray-50/60">
+          <button onClick={onClose} disabled={busy}
+            className="px-4 py-2 rounded-xl text-sm font-semibold text-gray-600 hover:bg-gray-100 disabled:opacity-50">Cancel</button>
+          <button onClick={submit} disabled={!valid || busy}
+            className="px-4 py-2 rounded-xl text-sm font-semibold bg-rose-600 text-white hover:bg-rose-700 disabled:bg-gray-300">
+            {busy ? 'Hiding…' : 'Hide paper'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// Hidden Papers section — everything an admin hid, newest first, with Restore.
+function HiddenPapersView({ showToast }) {
+  const [rows, setRows] = useState(null)
+  const [page, setPage] = useState(1)
+  const [limit, setLimit] = useState(20)
+  const [total, setTotal] = useState(0)
+  const [totalPages, setTotalPages] = useState(1)
+  const [detailId, setDetailId] = useState(null)
+  const [busyId, setBusyId] = useState(null)
+
+  const load = () => {
+    setRows(null)
+    apiFetch(`/api/admin/test-submissions/hidden?page=${page}&limit=${limit}`)
+      .then(d => { setRows(d.submissions || []); setTotal(d.total || 0); setTotalPages(d.totalPages || 1) })
+      .catch(() => { setRows([]); setTotal(0); setTotalPages(1) })
+  }
+  useEffect(() => { load() }, [page, limit])
+
+  const onLimit = (v) => { setLimit(v); setPage(1) }
+
+  // `row` is a list row or the detail modal's submission (the modal has no otherAttempts).
+  const restore = async (row) => {
+    if (busyId) return
+    const where = row.status === 'completed'
+      ? 'the completed papers, with its marks'
+      : row.status === 'assigned' && row.mentor
+        ? `${row.mentor.name || row.mentor.phoneNumber || 'the mentor'}’s queue`
+        : 'the mentor pool'
+    const others = row.otherAttempts ?? 0
+    const note = others > 0
+      ? `\n\nThe student has ${others} other submission${others === 1 ? '' : 's'} of this paper that still count — after restoring, this one counts as well.`
+      : ''
+    if (!window.confirm(`Restore this paper?\n\nIt goes back to ${where} and counts again everywhere.${note}`)) return
+    setBusyId(row._id)
+    try {
+      await apiFetch(`/api/admin/test-submissions/${row._id}/restore`, { method: 'POST' })
+      showToast('Paper restored')
+      setDetailId(null)
+      if (rows?.length === 1 && page > 1) setPage(p => p - 1)
+      else load()
+    } catch (e) { showToast(e.message) } finally { setBusyId(null) }
+  }
+
+  const rangeStart = total === 0 ? 0 : (page - 1) * limit + 1
+  const rangeEnd   = Math.min(page * limit, total)
+
+  return (
+    <section className="bg-white rounded-2xl shadow-sm p-5">
+      <h2 className="font-bold text-gray-900 mb-1">Hidden Papers</h2>
+      <p className="text-xs text-gray-400 mb-4">
+        Papers hidden from mentors and from every count — for example when a student uploaded the wrong PDF.
+        Nothing here is deleted; restore a paper to put it back where it was.
+      </p>
+
+      {rows === null ? (
+        <p className="text-sm text-gray-400">Loading…</p>
+      ) : !rows.length ? (
+        <p className="text-sm text-gray-500">No hidden papers.</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50 text-gray-500 text-xs">
+              <tr>
+                <th className="text-left font-semibold px-3 py-2.5">Student</th>
+                <th className="text-left font-semibold px-3 py-2.5">Paper</th>
+                <th className="text-left font-semibold px-3 py-2.5">When hidden, it was</th>
+                <th className="text-left font-semibold px-3 py-2.5">Submitted on</th>
+                <th className="text-left font-semibold px-3 py-2.5">Hidden</th>
+                <th className="text-left font-semibold px-3 py-2.5">Reason</th>
+                <th className="px-3 py-2.5"><span className="sr-only">Actions</span></th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(r => (
+                <tr key={r._id} onClick={() => setDetailId(r._id)}
+                  className="border-t border-gray-50 cursor-pointer hover:bg-gray-50 align-top">
+                  <td className="px-3 py-2.5">
+                    <p className="text-gray-800 font-medium">{r.studentName || '—'}</p>
+                    <p className="text-xs text-gray-400">{r.studentPhone}</p>
+                  </td>
+                  <td className="px-3 py-2.5 text-gray-600">
+                    <p>{r.fileName || '—'}</p>
+                    <p className="text-xs text-gray-400">{[r.level, r.subject, r.chapter].filter(Boolean).join(' · ')}</p>
+                    {r.otherAttempts > 0 && (
+                      <span className="mt-1 inline-block px-1.5 py-0.5 rounded-md bg-emerald-50 text-emerald-700 text-[10px] font-semibold"
+                        title="Other submissions of this paper by the same student that are still counted">
+                        {r.otherAttempts} other attempt{r.otherAttempts === 1 ? '' : 's'} on record
+                      </span>
+                    )}
+                  </td>
+                  <td className="px-3 py-2.5">
+                    <span className={`px-2 py-0.5 rounded-full text-xs font-semibold ${STATUS_STYLE[r.status] || ''}`}>
+                      {r.status}{r.status === 'completed' && r.awardedMarks != null ? ` · ${r.awardedMarks}/${r.totalMarks}` : ''}
+                    </span>
+                    {r.mentor && <p className="text-xs text-gray-500 mt-1">{r.mentor.name || r.mentor.phoneNumber}</p>}
+                  </td>
+                  <td className="px-3 py-2.5 text-gray-600 whitespace-nowrap text-xs">{fmtDay(r.createdAt)}</td>
+                  <td className="px-3 py-2.5 text-xs whitespace-nowrap">
+                    <p className="text-gray-600">{fmtDay(r.hiddenAt)}</p>
+                    <p className="text-gray-400">{r.hiddenBy?.name || r.hiddenBy?.phoneNumber || '—'}</p>
+                  </td>
+                  <td className="px-3 py-2.5 text-xs text-gray-600 max-w-[220px] break-words">{r.hiddenReason || '—'}</td>
+                  <td className="px-3 py-2.5 text-right" onClick={e => e.stopPropagation()}>
+                    <button onClick={() => restore(r)} disabled={!!busyId}
+                      className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-indigo-50 text-indigo-700 hover:bg-indigo-100 disabled:opacity-50">
+                      {busyId === r._id ? 'Restoring…' : 'Restore'}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {rows !== null && total > 0 && (
+        <div className="flex items-center justify-between flex-wrap gap-3 mt-4 pt-4 border-t border-gray-100">
+          <div className="flex items-center gap-2 text-xs text-gray-500">
+            <span>Rows per page:</span>
+            <select value={limit} onChange={e => onLimit(Number(e.target.value))}
+              className="px-2 py-1 border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-400">
+              {[10, 20, 50, 100].map(n => <option key={n} value={n}>{n}</option>)}
+            </select>
+            <span className="ml-1">{rangeStart}–{rangeEnd} of {total}</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page <= 1}
+              className="px-3 py-1.5 rounded-lg text-xs font-semibold border border-gray-200 text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed">
+              ← Previous
+            </button>
+            <span className="text-xs text-gray-500">Page {page} of {totalPages}</span>
+            <button onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page >= totalPages}
+              className="px-3 py-1.5 rounded-lg text-xs font-semibold border border-gray-200 text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed">
+              Next →
+            </button>
+          </div>
+        </div>
+      )}
+
+      {detailId && (
+        <SubmissionDetailModal id={detailId} onClose={() => setDetailId(null)}
+          onRestore={(sub) => restore({ ...sub, otherAttempts: rows?.find(r => r._id === sub._id)?.otherAttempts })}
+          restoring={busyId === detailId} />
+      )}
     </section>
   )
 }
@@ -636,7 +923,8 @@ function DocBtn({ children, onClick, disabled, color = 'indigo' }) {
   )
 }
 
-function SubmissionDetailModal({ id, onClose }) {
+// onHide(sub): offered for a visible paper. onRestore(sub): offered for a hidden one.
+function SubmissionDetailModal({ id, onClose, onHide, onRestore, restoring = false }) {
   const [sub, setSub] = useState(null)
   const [error, setError] = useState('')
 
@@ -663,6 +951,22 @@ function SubmissionDetailModal({ id, onClose }) {
           <div className="p-6 text-sm text-gray-400">Loading…</div>
         ) : (
           <div className="p-5 space-y-5">
+            {sub.hidden && (
+              <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3">
+                <p className="text-sm font-semibold text-rose-800">Hidden — not evaluated or counted anywhere</p>
+                <p className="text-xs text-rose-700 mt-0.5">
+                  {fmtDate(sub.hiddenAt)}{sub.hiddenBy ? ` · by ${sub.hiddenBy.name || sub.hiddenBy.phoneNumber}` : ''}
+                </p>
+                {sub.hiddenReason && <p className="text-sm text-rose-900 mt-1.5">{sub.hiddenReason}</p>}
+                {onRestore && (
+                  <button onClick={() => onRestore(sub)} disabled={restoring}
+                    className="mt-2.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-white text-indigo-700 border border-indigo-200 hover:bg-indigo-50 disabled:opacity-50">
+                    {restoring ? 'Restoring…' : 'Restore paper'}
+                  </button>
+                )}
+              </div>
+            )}
+
             {/* Student */}
             <div className="bg-gray-50 rounded-xl px-4 py-3">
               <p className="text-xs text-gray-400 mb-1">Student</p>
@@ -785,6 +1089,34 @@ function SubmissionDetailModal({ id, onClose }) {
                 <p className="text-sm text-gray-500">
                   Not evaluated yet{sub.mentor?.name ? ` — assigned to ${sub.mentor.name}` : ' — sitting in the mentor pool'}.
                 </p>
+              </div>
+            )}
+
+            {/* Hide / restore audit trail */}
+            {(sub.hideLog || []).length > 0 && (
+              <div className="border-t border-gray-100 pt-4">
+                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Hide history</p>
+                <ul className="space-y-1.5">
+                  {sub.hideLog.map((h, i) => (
+                    <li key={i} className="text-xs text-gray-600">
+                      <span className={`font-semibold ${h.action === 'hide' ? 'text-rose-700' : 'text-indigo-700'}`}>
+                        {h.action === 'hide' ? 'Hidden' : 'Restored'}
+                      </span>
+                      {' '}· {fmtDate(h.at)}{h.by ? ` · ${h.by.name || h.by.phoneNumber}` : ''}
+                      {h.reason && <span className="block text-gray-500 pl-3">“{h.reason}”</span>}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {!sub.hidden && onHide && (
+              <div className="border-t border-gray-100 pt-4 flex items-center justify-between gap-3 flex-wrap">
+                <p className="text-xs text-gray-400">Wrong file, duplicate or otherwise not to be evaluated?</p>
+                <button onClick={() => onHide(sub)}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-rose-50 text-rose-700 hover:bg-rose-100">
+                  <EyeOffIcon /> Hide paper
+                </button>
               </div>
             )}
           </div>
