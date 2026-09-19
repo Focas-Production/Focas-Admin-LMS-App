@@ -56,17 +56,23 @@ export default function SubmissionsModal({
     ? 'bg-blue-600 hover:bg-blue-700'
     : 'bg-teal-600 hover:bg-teal-700'
 
+  // Parents pass onCountsChange inline, so it is a new function on every render.
+  // Reading it through a ref keeps it out of load's deps — otherwise load →
+  // onCountsChange → parent re-render → new load → load … refetches forever.
+  const onCountsRef = useRef(onCountsChange)
+  useEffect(() => { onCountsRef.current = onCountsChange }, [onCountsChange])
+
   const load = useCallback(async () => {
     try {
       const d = await apiFetch(`${basePath}/${classId}/submissions`)
       setData(d)
-      onCountsChange?.(d.counts)
+      onCountsRef.current?.(d.counts)
       setError('')
     } catch (e) {
       setError(e.message || 'Could not load submissions')
       setData({ submissions: [], counts: { total: 0, pending: 0, reviewed: 0 } })
     }
-  }, [apiFetch, basePath, classId, onCountsChange])
+  }, [apiFetch, basePath, classId])
 
   useEffect(() => { load() }, [load])
 
