@@ -476,6 +476,201 @@ function LectureAccessPanel({ product, subjects }) {
   )
 }
 
+// ─── Question Bank product (qb.focasedu.com) ────────────────────────────────────
+// Q.Bank is sold three ways: one subject, one group (4 papers) or both groups
+// (all 8). Whichever is picked here decides both the soft-copy PDFs and the AI
+// questions the buyer gets — a single-subject book unlocks that subject only.
+const CA_GROUPS = [
+  { value: 'group1', label: 'Group 1' },
+  { value: 'group2', label: 'Group 2' },
+]
+
+const asId = id => (typeof id === 'object' && id !== null ? id._id ?? id : id)
+
+function QuestionBankAccessPanel({ product, subjects }) {
+  const qb = product.questionBankAccess || {}
+  const [enabled,     setEnabled]     = useState(!!qb.enabled)
+  const [softCopy,    setSoftCopy]    = useState(qb.enabled ? !!qb.softCopy    : true)
+  const [aiQuestions, setAiQuestions] = useState(qb.enabled ? !!qb.aiQuestions : true)
+  const [groupGrants, setGroupGrants] = useState(
+    (qb.groupGrants ?? []).map(g => ({ level: g.level, group: g.group }))
+  )
+  const [subjectIds, setSubjectIds] = useState((qb.subjectIds ?? []).map(asId))
+  const [saving, setSaving] = useState(false)
+  const [saved,  setSaved]  = useState(false)
+  const [error,  setError]  = useState(null)
+
+  const touch = () => setSaved(false)
+
+  // Only levels that actually have grouped papers get a group row (Foundation has none).
+  const levelsWithGroups = CA_LEVELS.filter(lv =>
+    subjects.some(s => s.level === lv && (s.group === 'group1' || s.group === 'group2'))
+  )
+
+  const hasGroup   = (level, group) => groupGrants.some(g => g.level === level && g.group === group)
+  const toggleGroup = (level, group) => {
+    setGroupGrants(prev => hasGroup(level, group)
+      ? prev.filter(g => !(g.level === level && g.group === group))
+      : [...prev, { level, group }])
+    touch()
+  }
+  const pickBothGroups = level => {
+    const all = CA_GROUPS.every(g => hasGroup(level, g.value))
+    setGroupGrants(prev => {
+      const rest = prev.filter(g => g.level !== level)
+      return all ? rest : [...rest, ...CA_GROUPS.map(g => ({ level, group: g.value }))]
+    })
+    touch()
+  }
+
+  // Preview of the effective grant — groups expanded to their papers, then merged
+  // with the individually ticked subjects. This is exactly what the server stores.
+  const coveredSubjects = (() => {
+    const ids = new Set(subjectIds.map(String))
+    groupGrants.forEach(g =>
+      subjects.filter(s => s.level === g.level && s.group === g.group).forEach(s => ids.add(String(s._id)))
+    )
+    return subjects.filter(s => ids.has(String(s._id)))
+  })()
+
+  const orig = {
+    enabled:     !!qb.enabled,
+    softCopy:    !!qb.softCopy,
+    aiQuestions: !!qb.aiQuestions,
+    groupGrants: [...(qb.groupGrants ?? [])].map(g => `${g.level}:${g.group}`).sort(),
+    subjectIds:  [...(qb.subjectIds ?? []).map(asId).map(String)].sort(),
+  }
+  // A product that isn't a Q.Bank product and hasn't been switched on has nothing
+  // to save — without this the unsaved defaults below would arm Save on all 80.
+  const dirty = (!enabled && !orig.enabled) ? false :
+    enabled     !== orig.enabled     ||
+    softCopy    !== orig.softCopy    ||
+    aiQuestions !== orig.aiQuestions ||
+    JSON.stringify(groupGrants.map(g => `${g.level}:${g.group}`).sort()) !== JSON.stringify(orig.groupGrants) ||
+    JSON.stringify([...subjectIds.map(String)].sort()) !== JSON.stringify(orig.subjectIds)
+
+  const handleSave = async () => {
+    setSaving(true); setError(null); setSaved(false)
+    try {
+      await apiFetch(`/api/admin/products/${product._id}/question-bank-access`, {
+        method: 'PUT',
+        body: JSON.stringify({ enabled, softCopy, aiQuestions, groupGrants, subjectIds }),
+      })
+      setSaved(true)
+      setTimeout(() => setSaved(false), 2500)
+    } catch (err) {
+      setError(err.message || 'Save failed')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const INCLUDES = [
+    { key: 'softCopy',    label: 'Soft copy',   hint: 'Q.Bank PDFs for the covered subjects',    on: softCopy,    set: setSoftCopy },
+    { key: 'aiQuestions', label: 'AI questions', hint: 'AI practice on the covered subjects only', on: aiQuestions, set: setAiQuestions },
+  ]
+
+  return (
+    <div className="mt-3 pt-3 border-t border-gray-100">
+      <label className="flex items-center justify-between cursor-pointer mb-2">
+        <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Question Bank</p>
+        <span className="relative inline-flex items-center">
+          <input type="checkbox" checked={enabled} onChange={() => { setEnabled(v => !v); touch() }} className="sr-only peer" />
+          <span className="w-9 h-5 bg-gray-200 rounded-full peer-checked:bg-amber-500 transition-colors" />
+          <span className="absolute left-0.5 top-0.5 w-4 h-4 bg-white rounded-full transition-transform peer-checked:translate-x-4" />
+        </span>
+      </label>
+
+      {!enabled ? (
+        <p className="text-[11px] text-gray-400">
+          Not a Question Bank product. Q.Bank PDFs for this product stay governed by LMS Content Access above.
+        </p>
+      ) : (
+        <>
+          {/* What the order includes */}
+          <div className="mb-3">
+            <p className="text-[11px] text-gray-400 mb-1.5">This product includes</p>
+            <div className="flex flex-wrap gap-2">
+              {INCLUDES.map(i => (
+                <label key={i.key} title={i.hint}
+                  className={`flex items-center gap-1.5 text-xs font-medium cursor-pointer px-2.5 py-1.5 rounded-lg border transition-colors ${
+                    i.on ? 'bg-amber-50 border-amber-300 text-amber-700' : 'border-gray-200 text-gray-500 hover:border-gray-300'
+                  }`}>
+                  <input type="checkbox" checked={i.on} onChange={() => { i.set(v => !v); touch() }} className="sr-only" />
+                  {i.on ? '✓' : '○'} {i.label}
+                </label>
+              ))}
+            </div>
+            {aiQuestions && !product.aiTier && (
+              <p className="text-[11px] text-red-500 mt-1.5">
+                AI questions are on but no AI tier is set — buyers would get a zero monthly quota.
+                Pick Lite or Pro under <span className="font-medium">AI Question Generation</span> below.
+              </p>
+            )}
+          </div>
+
+          {/* Group-wise / both-groups sets */}
+          {levelsWithGroups.length === 0 && (
+            <p className="text-[11px] text-amber-600 mb-3">
+              No subject has a group yet, so group-wise sets can't be picked. Assign Group 1 / Group 2
+              on the <span className="font-medium">Subjects</span> page, then come back — until then use
+              the subject list below.
+            </p>
+          )}
+          {levelsWithGroups.length > 0 && (
+            <div className="mb-3">
+              <p className="text-[11px] text-gray-400 mb-1.5">Group-wise set (all papers in the group)</p>
+              {levelsWithGroups.map(lv => {
+                const both = CA_GROUPS.every(g => hasGroup(lv, g.value))
+                return (
+                  <div key={lv} className="flex items-center gap-3 mb-1">
+                    <span className={`text-[11px] font-semibold uppercase tracking-wide w-24 flex-shrink-0 ${LEVEL_CHECK[lv]}`}>{lv}</span>
+                    {CA_GROUPS.map(g => (
+                      <label key={g.value} className="flex items-center gap-1.5 text-xs text-gray-700 cursor-pointer">
+                        <input type="checkbox" checked={hasGroup(lv, g.value)} onChange={() => toggleGroup(lv, g.value)}
+                          className="rounded border-gray-300 focus:ring-amber-500" />
+                        {g.label}
+                      </label>
+                    ))}
+                    <button type="button" onClick={() => pickBothGroups(lv)}
+                      className="text-[11px] text-amber-600 hover:text-amber-800 font-medium ml-auto">
+                      {both ? 'Clear' : 'Both groups'}
+                    </button>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+
+          {/* Subject-wise set */}
+          {subjects.length > 0 && (
+            <div className="mb-3">
+              <p className="text-[11px] text-gray-400 mb-1.5">Subject-wise (single papers, added on top of the groups above)</p>
+              <SubjectPicker subjects={subjects} selected={subjectIds} onChange={ids => { setSubjectIds(ids); touch() }} />
+            </div>
+          )}
+
+          {/* Effective grant */}
+          <p className="text-[11px] text-gray-400 mb-2">
+            {coveredSubjects.length === 0
+              ? <span className="text-red-500">No subjects selected — this product would unlock nothing.</span>
+              : <>Covers <span className="font-medium text-gray-600">{coveredSubjects.length} subject{coveredSubjects.length > 1 ? 's' : ''}</span>: {coveredSubjects.map(s => s.name).join(', ')}</>}
+          </p>
+        </>
+      )}
+
+      <div className="flex items-center gap-2 mt-2">
+        <button onClick={handleSave} disabled={saving || (!dirty && !saved)}
+          className="text-xs px-3 py-1 rounded-lg bg-amber-600 text-white font-medium disabled:opacity-40 hover:bg-amber-700 transition-colors">
+          {saving ? 'Saving…' : 'Save Question Bank'}
+        </button>
+        {saved && <span className="text-xs text-green-600 font-medium">Saved</span>}
+        {error && <span className="text-xs text-red-500">{error}</span>}
+      </div>
+    </div>
+  )
+}
+
 // ─── Main page ─────────────────────────────────────────────────────────────────
 export default function ProductsPage() {
   const [products,  setProducts]  = useState([])
@@ -577,7 +772,8 @@ export default function ProductsPage() {
               </div>
             ))
           : products.map(p => {
-              const hasAccess = (p.contentAccess?.levels?.length || p.contentAccess?.subjectIds?.length)
+              const hasAccess = (p.contentAccess?.levels?.length || p.contentAccess?.subjectIds?.length
+                || p.questionBankAccess?.enabled)
               return (
                 <div key={p._id} className={`rounded-2xl p-5 shadow-sm ${p.isHidden ? 'bg-gray-50 border-2 border-gray-300' : 'bg-white'}`}>
                   {/* Product header */}
@@ -611,6 +807,7 @@ export default function ProductsPage() {
                       <span className="text-base font-bold text-indigo-600">₹{(p.price || 0).toLocaleString('en-IN')}</span>
                     </div>
                     <div className="flex gap-1.5">
+                      {p.questionBankAccess?.enabled && <span className="text-xs px-2 py-0.5 bg-amber-50 text-amber-600 rounded-full">Q.Bank</span>}
                       {p.isCourse   && <span className="text-xs px-2 py-0.5 bg-blue-50 text-blue-600 rounded-full">Course</span>}
                       {p.shipToHome && <span className="text-xs px-2 py-0.5 bg-orange-50 text-orange-600 rounded-full">Physical</span>}
                       {p.aiTier === 'pro'  && <span className="text-xs px-2 py-0.5 bg-violet-50 text-violet-600 rounded-full">AI Pro</span>}
@@ -695,6 +892,7 @@ function AccessDrawer({ product, subjects, onClose }) {
 
             {/* Scrollable body */}
             <div key={product._id} className="flex-1 overflow-y-auto px-5 py-4">
+              <QuestionBankAccessPanel product={product} subjects={subjects} />
               <ContentAccessPanel product={product} subjects={subjects} />
               <LectureAccessPanel product={product} subjects={subjects} />
               <TestSeriesAccessPanel product={product} subjects={subjects} />
