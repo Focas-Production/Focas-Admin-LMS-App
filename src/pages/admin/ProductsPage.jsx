@@ -293,6 +293,29 @@ function ProductCommunityPanel({ product }) {
 }
 
 // ─── Test-series access (independent of content access) ─────────────────────────
+// Papers allowed per granted subject, per type. Blank = all papers (what every
+// product made before this had), 0 = none, N = any N — the student picks which.
+const TEST_LIMIT_TYPES = [
+  { value: 'chapter_wise', label: 'Chapter-wise', noun: 'chapter-wise' },
+  { value: 'segment_wise', label: 'Segment-wise', noun: 'segment-wise' },
+  { value: 'full_test',    label: 'Full test',    noun: 'full' },
+]
+const limitsToInputs = (limits) =>
+  Object.fromEntries(TEST_LIMIT_TYPES.map(t => [t.value, limits?.[t.value] == null ? '' : String(limits[t.value])]))
+const limitsToBody = (inputs) =>
+  Object.fromEntries(TEST_LIMIT_TYPES.map(t => [t.value, inputs[t.value] === '' ? null : Number(inputs[t.value])]))
+
+function limitsSummary(inputs) {
+  const parts = TEST_LIMIT_TYPES.map(t => {
+    const v = inputs[t.value]
+    if (v === '') return `all ${t.noun}`
+    if (v === '0') return null
+    return `any ${v} ${t.noun}`
+  }).filter(Boolean)
+  if (!parts.length) return 'No tests: every type is set to 0.'
+  return `Buyer gets ${parts.join(', ')} tests per subject.`
+}
+
 function TestSeriesAccessPanel({ product, subjects }) {
   const ts = product.testSeriesAccess || {}
   const [enabled,    setEnabled]    = useState(!!ts.enabled)
@@ -300,6 +323,8 @@ function TestSeriesAccessPanel({ product, subjects }) {
   const [subjectIds, setSubjectIds] = useState(
     (ts.subjectIds ?? []).map(id => (typeof id === 'object' ? id._id ?? id : id))
   )
+  const [limits,      setLimits]      = useState(() => limitsToInputs(ts.limits))
+  const [savedLimits, setSavedLimits] = useState(() => limitsToInputs(ts.limits))
   const [saving, setSaving] = useState(false)
   const [saved,  setSaved]  = useState(false)
   const [error,  setError]  = useState(null)
@@ -314,8 +339,9 @@ function TestSeriesAccessPanel({ product, subjects }) {
     try {
       await apiFetch(`/api/admin/products/${product._id}/test-series-access`, {
         method: 'PUT',
-        body: JSON.stringify({ enabled, levels, subjectIds }),
+        body: JSON.stringify({ enabled, levels, subjectIds, limits: limitsToBody(limits) }),
       })
+      setSavedLimits(limits)
       setSaved(true)
       setTimeout(() => setSaved(false), 2500)
     } catch (err) {
@@ -333,7 +359,18 @@ function TestSeriesAccessPanel({ product, subjects }) {
   const dirty =
     enabled !== orig.enabled ||
     JSON.stringify([...levels].sort()) !== JSON.stringify(orig.levels) ||
-    JSON.stringify([...subjectIds].sort()) !== JSON.stringify(orig.subjectIds)
+    JSON.stringify([...subjectIds].sort()) !== JSON.stringify(orig.subjectIds) ||
+    TEST_LIMIT_TYPES.some(t => limits[t.value] !== savedLimits[t.value])
+
+  const setLimit = (type, raw) => {
+    // whole numbers only; blank means "all"
+    const v = raw.replace(/[^0-9]/g, '').slice(0, 3).replace(/^0+(?=\d)/, '')
+    setLimits(prev => ({ ...prev, [type]: v }))
+    setSaved(false)
+  }
+  const hasLimits = TEST_LIMIT_TYPES.some(t => limits[t.value] !== '')
+  const ca = product.contentAccess || {}
+  const libraryAlsoOpen = hasLimits && ((ca.levels ?? []).length > 0 || (ca.subjectIds ?? []).length > 0)
 
   return (
     <div className="mt-3 pt-3 border-t border-gray-100">
@@ -369,6 +406,38 @@ function TestSeriesAccessPanel({ product, subjects }) {
               <SubjectPicker subjects={subjects} selected={subjectIds} onChange={ids => { setSubjectIds(ids); setSaved(false) }} />
             </div>
           )}
+
+          <div className="mb-3">
+            <p className="text-[11px] text-gray-400 mb-1.5">Tests allowed per subject — leave blank for all, 0 for none</p>
+            <div className="grid grid-cols-3 gap-2">
+              {TEST_LIMIT_TYPES.map(t => (
+                <label key={t.value} className="block">
+                  <span className="block text-[11px] font-medium text-gray-600 mb-0.5">{t.label}</span>
+                  <input type="text" inputMode="numeric" value={limits[t.value]} placeholder="All"
+                    onChange={e => setLimit(t.value, e.target.value)}
+                    className="w-full px-2 py-1 text-xs border border-gray-200 rounded-lg outline-none focus:ring-1 focus:ring-emerald-500 placeholder:text-gray-400" />
+                </label>
+              ))}
+            </div>
+            {levels.length === 0 && subjectIds.length === 0 ? (
+              <p className="text-[11px] text-amber-600 mt-1.5">
+                No level or subject ticked, so buyers get no test papers. Tick a level or subjects above.
+              </p>
+            ) : (
+              <p className="text-[11px] text-emerald-700 mt-1.5">{limitsSummary(limits)}</p>
+            )}
+            {hasLimits && (
+              <p className="text-[11px] text-gray-400 mt-0.5">
+                The student picks which papers. A paper counts once they start it.
+              </p>
+            )}
+            {libraryAlsoOpen && (
+              <p className="text-[11px] text-amber-600 mt-1">
+                LMS Content Access above is also set, which shows every test paper in the student&apos;s library.
+                Clear it if this product should only give the limited tests.
+              </p>
+            )}
+          </div>
         </>
       )}
 
