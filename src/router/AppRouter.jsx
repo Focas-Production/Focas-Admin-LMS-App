@@ -5,6 +5,7 @@ import ProtectedRoute from './ProtectedRoute'
 import LoginPage from '../auth/LoginPage'
 import AdminLayout from '../layouts/AdminLayout'
 import AdminDashboard from '../pages/admin/AdminDashboard'
+import ActionCenterPage from '../pages/admin/ActionCenterPage'
 import UsersPage from '../pages/admin/UsersPage'
 import StudentProgressPage from '../pages/admin/StudentProgressPage'
 import ProductsPage from '../pages/admin/ProductsPage'
@@ -29,7 +30,8 @@ export default function AppRouter() {
       <Route path="/login" element={<LoginPage />} />
 
       <Route path="/admin" element={<ProtectedRoute><AdminLayout /></ProtectedRoute>}>
-        <Route index          element={<AdminDashboard />} />
+        <Route index          element={<ActionCenterPage />} />
+        <Route path="sales"    element={<AdminDashboard />} />
         <Route path="users"    element={<UsersPage />} />
         <Route path="users/:id/progress" element={<StudentProgressPage />} />
         <Route path="products"  element={<ProductsPage />} />
