@@ -26,6 +26,13 @@ const TONE = {
   none:  { bar: 'bg-gray-300',    text: 'text-gray-400' },
 }
 
+// Scenario chips (one per kind of problem inside a card).
+const CHIP = {
+  bad:   'bg-red-50 text-red-700 ring-red-200',
+  watch: 'bg-amber-50 text-amber-800 ring-amber-200',
+  none:  'bg-gray-50 text-gray-600 ring-gray-200',
+}
+
 const QUICK_VIEWS = [
   { to: '/admin/users',            label: 'Students' },
   { to: '/admin/live-classes',     label: 'Schedule' },
@@ -58,9 +65,12 @@ function TodayTile({ value, label, alert, onClick }) {
 
 function QueueCard({ card, onOpen }) {
   const clear = card.count === 0
+  const scenarios = card.scenarios || []
   return (
-    <button onClick={() => onOpen(card.key)}
-      className={`group bg-white rounded-2xl p-4 shadow-sm border-2 text-left transition hover:shadow-md ${
+    <div role="button" tabIndex={0} title={card.hint}
+      onClick={() => onOpen(card.key)}
+      onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(card.key) } }}
+      className={`group bg-white rounded-2xl p-4 shadow-sm border-2 text-left transition hover:shadow-md cursor-pointer ${
         clear ? 'border-transparent' : 'border-red-200 hover:border-red-400'
       }`}>
       <div className="flex items-start justify-between gap-2">
@@ -70,14 +80,27 @@ function QueueCard({ card, onOpen }) {
         <span className="text-gray-300 group-hover:text-gray-500 text-lg leading-none">→</span>
       </div>
       <p className="text-sm font-semibold text-gray-900 mt-2">{card.title}</p>
-      <p className="text-xs text-gray-400 mt-1 leading-snug">{clear ? 'Nothing waiting' : card.hint}</p>
-    </button>
+      {clear || !scenarios.length ? (
+        <p className="text-xs text-gray-400 mt-1 leading-snug">{clear ? 'Nothing waiting' : card.hint}</p>
+      ) : (
+        <div className="flex flex-wrap gap-1.5 mt-2">
+          {scenarios.map(sc => (
+            <button key={sc.key}
+              onClick={e => { e.stopPropagation(); onOpen(card.key, sc.key) }}
+              className={`text-[11px] font-medium px-2 py-0.5 rounded-full ring-1 hover:brightness-95 ${CHIP[sc.tone] || CHIP.none}`}>
+              {sc.label} · {sc.count}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   )
 }
 
 // ── Drill-down drawer ────────────────────────────────────────────────────────
 
-function ItemRow({ item, busy, onAction, onOpenLink }) {
+function ItemRow({ item, busy, onAction, onOpenLink, scenarioByKey }) {
+  const chips = (item.tags || []).map(t => scenarioByKey[t]).filter(Boolean)
   return (
     <li className="px-5 py-3.5 border-b border-gray-100">
       <div className="flex items-start justify-between gap-3">
@@ -86,7 +109,17 @@ function ItemRow({ item, busy, onAction, onOpenLink }) {
             {item.name}
             {item.phone && <span className="ml-2 text-xs font-normal text-gray-400">{item.phone}</span>}
           </p>
+          {chips.length > 0 && (
+            <div className="flex flex-wrap gap-1 mt-1">
+              {chips.map(c => (
+                <span key={c.key} className={`text-[11px] font-medium px-1.5 py-0.5 rounded ring-1 ${CHIP[c.tone] || CHIP.none}`}>{c.label}</span>
+              ))}
+            </div>
+          )}
           <p className="text-sm text-gray-700 mt-0.5">{item.title}</p>
+          {item.kind === 'class' && (item.reasons || []).length > 0 && (
+            <p className="text-xs font-medium text-red-600 mt-0.5">{item.reasons.join(' · ')}</p>
+          )}
           {item.detail && <p className="text-xs text-gray-400 mt-0.5">{item.detail}</p>}
           {item.at && (
             <p className="text-[11px] text-gray-400 mt-1">
@@ -118,12 +151,13 @@ function ItemRow({ item, busy, onAction, onOpenLink }) {
   )
 }
 
-function Drawer({ listKey, onClose, onChanged }) {
+function Drawer({ listKey, initialScenario, onClose, onChanged }) {
   const navigate = useNavigate()
   const [data, setData] = useState(null)
   const [error, setError] = useState('')
   const [q, setQ] = useState('')
   const [busyId, setBusyId] = useState(null)
+  const [scenario, setScenario] = useState(initialScenario || '')
 
   useEffect(() => {
     let alive = true
@@ -157,9 +191,15 @@ function Drawer({ listKey, onClose, onChanged }) {
     }
   }
 
+  // Counts come from the rows in hand, so they stay right after an action removes one.
+  const all = data?.items || []
+  const scenarios = (data?.scenarios || []).map(sc => ({ ...sc, count: all.filter(i => (i.tags || []).includes(sc.key)).length }))
+  const scenarioByKey = Object.fromEntries(scenarios.map(sc => [sc.key, sc]))
   const needle = q.trim().toLowerCase()
-  const items = (data?.items || []).filter(i => !needle ||
-    [i.name, i.phone, i.title, i.detail].some(v => v && String(v).toLowerCase().includes(needle)))
+  const items = all
+    .filter(i => !scenario || (i.tags || []).includes(scenario))
+    .filter(i => !needle ||
+      [i.name, i.phone, i.title, i.detail].some(v => v && String(v).toLowerCase().includes(needle)))
 
   return (
     <div className="fixed inset-0 z-40 flex justify-end">
@@ -184,6 +224,22 @@ function Drawer({ listKey, onClose, onChanged }) {
           </div>
         )}
 
+        {scenarios.length > 0 && (
+          <div className="px-5 py-2.5 border-b border-gray-100 flex flex-wrap gap-1.5">
+            {[{ key: '', label: 'All', count: all.length, tone: 'none' }, ...scenarios].map(sc => {
+              const active = scenario === sc.key
+              return (
+                <button key={sc.key || 'all'} onClick={() => setScenario(sc.key)}
+                  className={`text-xs font-medium px-2.5 py-1 rounded-full ring-1 transition-colors ${
+                    active ? 'bg-indigo-600 text-white ring-indigo-600' : `${CHIP[sc.tone] || CHIP.none} hover:brightness-95`
+                  }`}>
+                  {sc.label} · {sc.count}
+                </button>
+              )
+            })}
+          </div>
+        )}
+
         {error && <p className="mx-5 mt-3 text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2">{error}</p>}
 
         <div className="flex-1 overflow-y-auto">
@@ -196,11 +252,13 @@ function Drawer({ listKey, onClose, onChanged }) {
             <p className="px-5 py-12 text-center text-sm text-gray-400">Nothing here — all clear.</p>
           )}
           {data && data.total > 0 && items.length === 0 && (
-            <p className="px-5 py-12 text-center text-sm text-gray-400">No match for “{q}”.</p>
+            <p className="px-5 py-12 text-center text-sm text-gray-400">
+              {needle ? `No match for “${q}”.` : 'Nothing left in this group.'}
+            </p>
           )}
           <ul>
             {items.map(item => (
-              <ItemRow key={item.id} item={item} busy={busyId === item.id}
+              <ItemRow key={item.id} item={item} busy={busyId === item.id} scenarioByKey={scenarioByKey}
                 onAction={act} onOpenLink={to => navigate(to)} />
             ))}
           </ul>
@@ -216,7 +274,8 @@ export default function ActionCenterPage() {
   const [data, setData] = useState(null)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
-  const [open, setOpen] = useState(null)   // list key shown in the drawer
+  const [open, setOpen] = useState(null)   // { key, scenario } shown in the drawer
+  const openList = useCallback((key, scenario = '') => setOpen({ key, scenario }), [])
 
   const load = useCallback((fresh = false) =>
     apiFetch(`/api/admin/action-center${fresh ? '?fresh=1' : ''}`)
@@ -241,7 +300,7 @@ export default function ActionCenterPage() {
   const attentionTotal = (data?.queue || []).reduce((s, c) => s + c.count, 0)
 
   return (
-    <div className="p-6 space-y-7 max-w-7xl">
+    <div className="p-6 space-y-7">
       {/* Header */}
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
@@ -278,9 +337,9 @@ export default function ActionCenterPage() {
               <TodayTile value={t.attendanceToday.percent == null ? '—' : `${t.attendanceToday.percent}%`}
                 label={t.attendanceToday.seats ? `Attendance today · ${t.attendanceToday.seats} seats` : 'Attendance today · no classes ended yet'} />
               <TodayTile value={t.tutorAlerts} label="Tutor alerts open" alert={t.tutorAlerts > 0}
-                onClick={() => setOpen('tutorAlerts')} />
+                onClick={() => openList('tutorAlerts')} />
               <TodayTile value={t.sessionsOverdue} label="Sessions overdue" alert={t.sessionsOverdue > 0}
-                onClick={() => setOpen('sessionsOverdue')} />
+                onClick={() => openList('sessionsOverdue')} />
             </div>
           </section>
 
@@ -288,7 +347,7 @@ export default function ActionCenterPage() {
           <section>
             <SectionTitle className="text-red-600">🔴 Action queue — needs admin action today</SectionTitle>
             <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
-              {data.queue.map(card => <QueueCard key={card.key} card={card} onOpen={setOpen} />)}
+              {data.queue.map(card => <QueueCard key={card.key} card={card} onOpen={openList} />)}
             </div>
           </section>
 
@@ -297,11 +356,19 @@ export default function ActionCenterPage() {
             <SectionTitle className="text-amber-600">🟡 Exceptions — trending toward a problem</SectionTitle>
             <div className="bg-white rounded-2xl shadow-sm divide-y divide-gray-100 overflow-hidden">
               {data.exceptions.map(row => (
-                <button key={row.key} onClick={() => setOpen(row.key)} title={row.hint}
-                  className="w-full flex items-center justify-between gap-3 px-4 py-3 text-left hover:bg-gray-50 transition-colors">
-                  <span className="flex items-center gap-2.5 min-w-0">
+                <div key={row.key} role="button" tabIndex={0} onClick={() => openList(row.key)} title={row.hint}
+                  onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openList(row.key) } }}
+                  className="w-full flex items-center justify-between gap-3 px-4 py-3 text-left hover:bg-gray-50 transition-colors cursor-pointer">
+                  <span className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 min-w-0">
                     <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${row.count ? 'bg-amber-500' : 'bg-emerald-500'}`} />
                     <span className="text-sm text-gray-800">{row.title}</span>
+                    {(row.scenarios || []).map(sc => (
+                      <button key={sc.key}
+                        onClick={e => { e.stopPropagation(); openList(row.key, sc.key) }}
+                        className={`text-[11px] font-medium px-2 py-0.5 rounded-full ring-1 hover:brightness-95 ${CHIP[sc.tone] || CHIP.none}`}>
+                        {sc.label} · {sc.count}
+                      </button>
+                    ))}
                   </span>
                   <span className="flex items-center gap-3 flex-shrink-0">
                     <span className={`text-xs font-semibold px-2.5 py-0.5 rounded-full ${
@@ -309,7 +376,7 @@ export default function ActionCenterPage() {
                     }`}>{row.count}</span>
                     <span className="text-gray-300">→</span>
                   </span>
-                </button>
+                </div>
               ))}
             </div>
           </section>
@@ -351,7 +418,8 @@ export default function ActionCenterPage() {
         </>
       )}
 
-      {open && <Drawer listKey={open} onClose={closeDrawer} onChanged={() => load(true)} />}
+      {open && <Drawer key={`${open.key}|${open.scenario}`} listKey={open.key} initialScenario={open.scenario}
+        onClose={closeDrawer} onChanged={() => load(true)} />}
     </div>
   )
 }
