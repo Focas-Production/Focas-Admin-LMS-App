@@ -162,12 +162,14 @@ function Pager({ page, totalPages, total, onPage, unit }) {
   )
 }
 
-// A row of "12 Present" style counters above a log table.
-function Tallies({ items }) {
+// A row of "12 Present" style counters above a log table. `title` labels the
+// row when a section stacks more than one.
+function Tallies({ items, title }) {
   return (
     <div className="flex items-center gap-5 px-5 py-3 border-b border-gray-100 flex-wrap">
+      {title && <p className="w-16 text-[10px] font-bold text-gray-500 uppercase tracking-wide">{title}</p>}
       {items.map(t => (
-        <div key={t.label}>
+        <div key={t.label} title={t.hint}>
           <p className={`text-base font-bold leading-tight ${TEXT_TONES[t.tone] || 'text-gray-900'}`}>{t.value}</p>
           <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">{t.label}</p>
         </div>
@@ -175,6 +177,11 @@ function Tallies({ items }) {
     </div>
   )
 }
+
+// A class can cover several chapters; the log row lists every one of them.
+const logTopics = (r) => (r.items?.length ? r.items : [r])
+  .map(i => [i.chapter?.name, i.unit?.name].filter(Boolean).join(' · '))
+  .filter(Boolean).join(', ')
 
 const inputCls = 'text-xs px-3 py-1.5 border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-400 bg-white'
 
@@ -256,58 +263,81 @@ async function openInTab(path, onError) {
 
 // ───────────────────────────── 1 · subject-wise progress ─────────────────────────────
 
-const SUBJECT_FILTERS = [
-  { key: 'all',         label: 'All' },
-  { key: 'in-progress', label: 'In progress' },
-  { key: 'completed',   label: 'Completed' },
-  { key: 'not-started', label: 'Not started' },
-]
+const PAPER_STATUS = {
+  completed:     { label: 'Finished',          tone: 'emerald' },
+  'in-progress': { label: 'In progress',       tone: 'amber' },
+  'not-started': { label: 'No class held yet', tone: 'gray' },
+}
+const NO_CLASSES = { booked: 0, held: 0, attended: 0, missed: 0, live: 0, upcoming: 0, nextClassAt: null }
 
-// Every chapter/topic row sits on one ladder the server computes from live-class
-// attendance: not-allotted → allotted → attended → completed. These chips slice
-// the rows by rung; the subject chips slice by paper.
-const STATUS_FILTERS = [
-  { key: 'all',          label: 'All topics',   tone: 'indigo' },
-  { key: 'not-allotted', label: 'Not allotted', tone: 'gray' },
-  { key: 'allotted',     label: 'Allotted',     tone: 'indigo' },
-  { key: 'attended',     label: 'Attended',     tone: 'amber' },
-  { key: 'completed',    label: 'Completed',    tone: 'emerald' },
+// The server puts every topic on a ladder (not-allotted → allotted → attended →
+// completed). Admins read that as jargon, so each topic is shown as ONE plain
+// state instead — and every count, chip and badge on this section uses these
+// same states, so the numbers always agree with each other.
+const TOPIC_STATES = [
+  { key: 'done',      label: 'Done',               tone: 'emerald', help: 'Mentor finished the topic and the student attended enough of it' },
+  { key: 'attending', label: 'Attended, not done', tone: 'amber',   help: 'Student came to class, but the topic is not finished for them yet' },
+  { key: 'missed',    label: 'Never attended',     tone: 'rose',    help: 'Classes were given for this topic but none of them were attended' },
+  { key: 'upcoming',  label: 'Class booked',       tone: 'indigo',  help: 'The next class for this topic is scheduled or running now' },
+  { key: 'no-class',  label: 'No class yet',       tone: 'gray',    help: 'No class has been given or booked for this topic yet' },
 ]
-const STATUS_META = {
-  'not-allotted': { label: 'Not allotted', tone: 'gray' },
-  allotted:       { label: 'Allotted',     tone: 'indigo' },
-  attended:       { label: 'Attended',     tone: 'amber' },
-  completed:      { label: '✓ Done',       tone: 'emerald' },
+const STATE_META = Object.fromEntries(TOPIC_STATES.map(s => [s.key, s]))
+
+function topicState(row) {
+  if (row.completed) return 'done'
+  if (row.status === 'attended') return 'attending'
+  if (row.status === 'allotted') return row.pendingKind === 'upcoming' || row.pendingKind === 'live' ? 'upcoming' : 'missed'
+  return 'no-class'
 }
 
-// One badge per rung. Under "allotted", pendingKind says whether the class is
-// running now or already went by without the student — both worth their own
-// word. Works for a row (pendingKind) and a rolled-up chapter (liveNow /
-// missedSessions / nextClassAt).
-function statusBadge(x) {
-  if (x.status === 'allotted') {
-    const live = x.pendingKind === 'live' || x.liveNow
-    const missed = x.pendingKind === 'missed' || (x.pendingKind == null && x.missedSessions > 0 && !x.nextClassAt)
-    if (live) return { label: 'Live now', tone: 'rose' }
-    if (missed) return { label: 'Missed', tone: 'rose' }
+function countStates(rows) {
+  const counts = Object.fromEntries(TOPIC_STATES.map(s => [s.key, 0]))
+  for (const r of rows) counts[topicState(r)] += 1
+  return counts
+}
+
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : (word.endsWith('s') ? 'es' : 's')}`
+
+// One plain sentence saying where this topic stands for the student and why.
+function describeTopic(row, threshold) {
+  const n = row.sessions || 0
+  const came = row.attendedSessions || 0
+  const bar = threshold != null ? `${threshold}%` : 'enough'
+  const by = row.markedByName || 'admin'
+  const next = row.nextClassAt ? `next class ${fmtDay(row.nextClassAt)}, ${fmtTime(row.nextClassAt)}` : ''
+
+  switch (topicState(row)) {
+    case 'done':
+      if (row.source === 'manual' || (!n && row.manualMark === 'completed')) return { text: `Marked done by ${by}` }
+      if (row.source === 'chapter') return { text: 'Covered in a full-chapter class' }
+      return { text: `Came to ${came} of ${plural(n, 'class')} · in class ${row.percent}% of the time` }
+
+    case 'attending': {
+      const base = `Came to ${came} of ${plural(n, 'class')} · in class ${row.percent}% of the time`
+      if (row.reason === 'teaching') return { text: base, why: 'mentor has not finished teaching this topic yet', cls: 'text-amber-600' }
+      return { text: base, why: `needs ${bar} to count as done`, cls: 'text-rose-500' }
+    }
+
+    case 'upcoming':
+      if (row.pendingKind === 'live') {
+        return row.joinedLive
+          ? { text: 'Class is live now', why: 'student is in it', cls: 'text-emerald-600' }
+          : { text: 'Class is live now', why: 'student has not joined', cls: 'text-rose-500' }
+      }
+      return { text: n ? `Missed ${plural(n, 'earlier class')}` : 'Class booked', why: next, cls: 'text-indigo-600' }
+
+    case 'missed': {
+      if (!n && row.manualMark === 'absent') return { text: `Marked absent by ${by}` }
+      const missed = n || row.missedSessions || 0
+      const text = missed === 1 ? 'Did not attend the class' : missed ? `Did not attend any of the ${missed} classes` : 'Did not attend'
+      // Joined but left too early to be counted present.
+      const why = row.percent > 0 ? `was in class only ${row.percent}% of the time (needs ${bar})` : ''
+      return { text, why, cls: 'text-rose-500' }
+    }
+
+    default:
+      return { text: 'No class given or booked for this student yet' }
   }
-  return STATUS_META[x.status] || STATUS_META['not-allotted']
-}
-
-const rowMatches = (row, filter) => filter === 'all' || row.status === filter
-
-// Why an item is still open. The distinction matters: "mentor still teaching"
-// is nobody's fault, "attendance short" is the student's to fix, and the rest
-// say where the next class stands.
-function reasonLabel(row) {
-  if (row.completed) return null
-  if (row.reason === 'teaching')   return { text: 'mentor still teaching', cls: 'text-amber-600' }
-  if (row.reason === 'attendance') return { text: 'attendance short', cls: 'text-rose-500' }
-  if (row.pendingKind === 'live')  return { text: row.joinedLive ? 'in the live class now' : 'class live now, not joined', cls: 'text-rose-500' }
-  if (row.pendingKind === 'upcoming') return { text: `next class ${fmtDay(row.nextClassAt)}, ${fmtTime(row.nextClassAt)}`, cls: 'text-indigo-600' }
-  if (row.pendingKind === 'missed')   return { text: `missed ${row.missedSessions} class${row.missedSessions !== 1 ? 'es' : ''}`, cls: 'text-rose-500' }
-  if (row.pendingKind === 'not-allotted') return { text: 'no class scheduled yet', cls: 'text-gray-400' }
-  return null
 }
 
 // The admin's hand-set mark on a topic, for work done before the LMS ran the
@@ -320,30 +350,27 @@ function MarkButton({ active, tone, busy, onClick, children }) {
     : 'bg-white text-rose-500 border border-rose-200 hover:bg-rose-50'
   return (
     <button type="button" onClick={onClick} disabled={busy}
-      title={active ? 'Click to clear this hand-set mark' : tone === 'emerald' ? 'Mark completed by hand' : 'Mark absent by hand'}
+      title={active ? 'Click to clear this hand-set mark' : tone === 'emerald' ? 'Mark done by hand' : 'Mark absent by hand'}
       className={`w-7 h-7 rounded-md text-xs font-bold transition-colors disabled:opacity-50 ${active ? on : off}`}>
       {children}
     </button>
   )
 }
 
-function ItemRow({ row, canMark, onMark, busy }) {
-  const reason = reasonLabel(row)
-  const badge = statusBadge(row)
+function ItemRow({ row, canMark, onMark, busy, threshold }) {
+  const state = STATE_META[topicState(row)]
+  const live = row.pendingKind === 'live' && !row.completed
+  const line = describeTopic(row, threshold)
   const mark = row.manualMark || null
+  // With the ✓/✗ buttons hidden, the ✎ is what says a person set this by hand.
+  const handSet = row.source === 'manual' || !!mark
   return (
     <div className="flex items-center gap-3 px-3 py-2 bg-gray-50 rounded-lg">
       <div className="flex-1 min-w-0">
         <p className="text-sm text-gray-900 truncate">{row.unitName || row.chapterName}</p>
-        <p className="text-[11px] text-gray-400 mt-0.5">
-          {row.sessions
-            ? `${row.sessions} session${row.sessions !== 1 ? 's' : ''} · ${row.percent}% attended`
-            : mark ? `hand-set ${mark} by ${row.markedByName || 'admin'}`
-            : `${row.allottedClasses || 0} class${row.allottedClasses === 1 ? '' : 'es'} allotted`}
-          {reason && <span className={reason.cls}> · {reason.text}</span>}
-          {row.nextClassAt && row.pendingKind !== 'upcoming' && (
-            <span className="text-indigo-600"> · next class {fmtDay(row.nextClassAt)}</span>
-          )}
+        <p className="text-[11px] text-gray-500 mt-0.5">
+          {line.text}
+          {line.why && <span className={line.cls}> — {line.why}</span>}
         </p>
       </div>
       {canMark && onMark && (
@@ -354,17 +381,27 @@ function ItemRow({ row, canMark, onMark, busy }) {
             onClick={() => onMark(row, mark === 'absent' ? null : 'absent')}>✗</MarkButton>
         </div>
       )}
-      <Badge tone={badge.tone}
-        title={row.source === 'manual' ? `Edited by ${row.markedByName || 'mentor'}`
-          : row.source === 'chapter' ? 'Completed with the whole chapter'
-          : 'Auto-computed from attendance'}>
-        {badge.label}{row.source === 'manual' && <span className="ml-0.5 opacity-60">✎</span>}
-      </Badge>
+      <div className="w-32 flex justify-end flex-shrink-0">
+        <Badge tone={live ? 'rose' : state.tone}
+          title={handSet ? `Set by hand by ${row.markedByName || 'admin'}` : state.help}>
+          {live ? 'Live now' : state.label}{handSet && <span className="ml-0.5 opacity-60">✎</span>}
+        </Badge>
+      </div>
     </div>
   )
 }
 
-function SubjectCard({ subject, query, rowFilter = 'all', defaultOpen, onMark, busyKey }) {
+// "3 missed · 2 class booked · 7 no class yet" — the not-done states only, in
+// the same words and colours as the filter chips.
+function StateSummary({ counts }) {
+  const parts = TOPIC_STATES.filter(s => s.key !== 'done' && counts[s.key] > 0)
+  if (!parts.length) return null
+  return parts.map(s => (
+    <span key={s.key} className={TEXT_TONES[s.tone] || 'text-gray-400'}> · {counts[s.key]} {s.label.toLowerCase()}</span>
+  ))
+}
+
+function SubjectCard({ subject, query, rowFilter = 'all', defaultOpen, forceOpen, onMark, busyKey, threshold }) {
   const [open, setOpen] = useState(defaultOpen)
   // Hand-set marks go on units where a chapter has them (the grain classes
   // are booked at); a chapter-level row of such a chapter can't take one.
@@ -373,21 +410,21 @@ function SubjectCard({ subject, query, rowFilter = 'all', defaultOpen, onMark, b
   const q = query.trim().toLowerCase()
   // A live search or a status filter forces every card open — collapsed
   // matches would look like no match at all.
-  const expanded = (q || rowFilter !== 'all') ? true : open
+  const expanded = (q || rowFilter !== 'all' || forceOpen) ? true : open
   // Search narrows by name (a matching chapter keeps every topic); the status
-  // chips then narrow by rung. A chapter with nothing left disappears.
+  // chips then narrow by state. A chapter with nothing left disappears.
   const chapters = subject.chapters
     .map(ch => {
       const rows = (q && !ch.name.toLowerCase().includes(q))
         ? ch.rows.filter(r => (r.unitName || '').toLowerCase().includes(q))
         : ch.rows
-      return { ...ch, rows: rows.filter(r => rowMatches(r, rowFilter)) }
+      return { ...ch, rows: rows.filter(r => rowFilter === 'all' || topicState(r) === rowFilter) }
     })
     .filter(ch => ch.rows.length)
 
   const tone = subject.status === 'completed' ? 'emerald' : toneFor(subject.percent)
-  const pending = subject.totalItems - subject.completedItems
-  const counts = subject.chapterStatusCounts || {}
+  const left = subject.totalItems - subject.completedItems
+  const counts = countStates(subject.chapters.flatMap(c => c.rows))
 
   return (
     <div className="border border-gray-100 rounded-xl overflow-hidden">
@@ -397,23 +434,20 @@ function SubjectCard({ subject, query, rowFilter = 'all', defaultOpen, onMark, b
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
             <p className="text-sm font-semibold text-gray-900 truncate">{subject.name}</p>
-            {subject.status === 'completed' && <Badge tone="emerald">Completed</Badge>}
-            {subject.status === 'not-started' && <Badge tone="gray">Not started</Badge>}
+            {subject.status === 'completed' && <Badge tone="emerald">Finished</Badge>}
+            {subject.status === 'not-started' && <Badge tone="gray">No class held yet</Badge>}
           </div>
           <div className="flex items-center gap-3 mt-1.5">
             <Bar percent={subject.percent} tone={tone} className="flex-1 max-w-[220px]" />
             <span className={`text-xs font-semibold ${TEXT_TONES[tone]}`}>{subject.percent}%</span>
-            <span className="text-[11px] text-gray-400 truncate">
-              {subject.completedChapters}/{subject.totalChapters} chapters ·{' '}
-              {subject.completedItems}/{subject.totalItems} topics ·{' '}
-              {subject.sessions} session{subject.sessions !== 1 ? 's' : ''}
-              {counts.allotted > 0 && <span className="text-indigo-600"> · {counts.allotted} allotted</span>}
-              {counts.attended > 0 && <span className="text-amber-600"> · {counts.attended} attended</span>}
-              {counts['not-allotted'] > 0 && <span> · {counts['not-allotted']} not allotted</span>}
+            <span className="text-[11px] text-gray-500 truncate">
+              {subject.completedItems} of {subject.totalItems} topics done
+              <span className="text-gray-400"> ({subject.completedChapters} of {subject.totalChapters} chapters)</span>
+              <StateSummary counts={counts} />
             </span>
           </div>
         </div>
-        {pending > 0 && <span className="text-[11px] text-gray-400 flex-shrink-0">{pending} pending</span>}
+        {left > 0 && <span className="text-[11px] text-gray-400 flex-shrink-0">{left} topic{left !== 1 ? 's' : ''} left</span>}
       </button>
 
       {expanded && (
@@ -428,22 +462,23 @@ function SubjectCard({ subject, query, rowFilter = 'all', defaultOpen, onMark, b
             // A chapter with no units is a single row that already carries its
             // own name and badge — repeating them as a heading would be noise.
             const single = ch.rows.length === 1 && !ch.rows[0].unitName
-            const chBadge = statusBadge(ch)
             return (
               <div key={ch.chapterId}>
                 {!single && (
                   <div className="flex items-center gap-2 mb-1.5 pl-1">
                     <p className="text-[11px] font-semibold text-gray-500 uppercase tracking-wide truncate">{ch.name}</p>
-                    <Badge tone={chBadge.tone}>{chBadge.label}</Badge>
+                    {ch.completed && <Badge tone="emerald">Chapter done</Badge>}
                     <Bar percent={ch.percent} tone={ch.completed ? 'emerald' : toneFor(ch.percent)} className="flex-1 max-w-[120px]" />
-                    <span className="text-[10px] text-gray-400 flex-shrink-0">{ch.done}/{ch.total}</span>
+                    <span className="text-[10px] text-gray-400 flex-shrink-0">
+                      {ch.completed ? 'all' : ch.done} of {ch.total} topics done
+                    </span>
                   </div>
                 )}
                 <div className="space-y-1.5">
                   {ch.rows.map(r => (
-                    <ItemRow key={`${r.chapterId}:${r.unitId || ''}`} row={r} onMark={onMark}
+                    <ItemRow key={`${r.chapterId}:${r.unitId || ''}`} row={r} onMark={onMark} threshold={threshold}
                       canMark={!!r.unitId || !unitChapters.has(ch.chapterId)}
-                      busy={busyKey === `${r.subjectId}|${r.chapterId}|${r.unitId || ''}`} />
+                      busy={!!busyKey} />
                   ))}
                 </div>
               </div>
@@ -455,71 +490,121 @@ function SubjectCard({ subject, query, rowFilter = 'all', defaultOpen, onMark, b
   )
 }
 
-function SyllabusSection({ syllabus, thresholdPercent, onMark, busyKey }) {
-  const [filter, setFilter] = useState('all')
+function SyllabusSection({ syllabus, classes, thresholdPercent, onMark, busyKey }) {
+  // '' = every paper, else one paper's id. Every number in the section —
+  // syllabus, classes and the topic chips — follows the picked paper.
+  const [paperId, setPaperId] = useState('')
   const [rowFilter, setRowFilter] = useState('all')
   const [query, setQuery] = useState('')
+  // The ✓/✗ hand-set marks are a correction tool, not something to read past
+  // on every visit — hidden until the admin asks to edit.
+  const [editing, setEditing] = useState(false)
+
+  // A paper that drops out of the report (scope changed, refresh) falls back
+  // to all papers rather than leaving an empty, unexplained section.
+  const paper = paperId ? syllabus.subjects.find(s => s.subjectId === paperId) || null : null
+  const papers = useMemo(() => (paper ? [paper] : syllabus.subjects), [paper, syllabus])
+
+  const stateCounts = useMemo(() => countStates(papers.flatMap(s => s.chapters.flatMap(c => c.rows))), [papers])
+  const totals = paper ? {
+    completedItems: paper.completedItems, totalItems: paper.totalItems,
+    completedChapters: paper.completedChapters, totalChapters: paper.totalChapters,
+  } : syllabus
+  // Per-paper class counts come from the server (a class that taught two
+  // papers counts under each); a paper with no class at all has no entry.
+  const classTotals = !classes ? null
+    : paper ? (classes.bySubject?.[paper.subjectId] || NO_CLASSES)
+    : classes
 
   const q = query.trim().toLowerCase()
-  const visible = syllabus.subjects.filter(s =>
-    (filter === 'all' || s.status === filter) &&
-    (rowFilter === 'all' || s.chapters.some(ch => ch.rows.some(r => rowMatches(r, rowFilter)))) &&
+  const visible = papers.filter(s =>
+    (rowFilter === 'all' || s.chapters.some(ch => ch.rows.some(r => topicState(r) === rowFilter))) &&
     (!q || s.name.toLowerCase().includes(q) ||
       s.chapters.some(ch => ch.name.toLowerCase().includes(q) || ch.rows.some(r => (r.unitName || '').toLowerCase().includes(q)))))
 
-  const counts = SUBJECT_FILTERS.reduce((a, f) => ({
-    ...a, [f.key]: f.key === 'all' ? syllabus.subjects.length : syllabus.subjects.filter(s => s.status === f.key).length,
-  }), {})
-  const chapterCounts = syllabus.chapterStatusCounts || {}
-  const statusCount = (key) => (key === 'all' ? syllabus.totalItems : (syllabus.itemStatusCounts?.[key] ?? 0))
 
   return (
     <Section id="subjects" index={1} title="Subject-wise progress"
-      subtitle={thresholdPercent != null
-        ? `Each chapter moves not allotted → allotted → attended → completed. A topic counts as completed once the mentor has taught it and this student attended ≥${thresholdPercent}% of its sessions.`
-        : undefined}>
-      <Tallies items={[
-        { label: 'Subjects done',  value: `${syllabus.completedSubjects}/${syllabus.totalSubjects}`, tone: 'emerald' },
-        { label: 'Chapters done',  value: `${syllabus.completedChapters}/${syllabus.totalChapters}`, tone: 'emerald' },
-        { label: 'Topics done',    value: `${syllabus.completedItems}/${syllabus.totalItems}`,       tone: 'emerald' },
-        { label: 'Attended, not done', value: chapterCounts.attended ?? 0,                            tone: 'amber' },
-        { label: 'Allotted, not attended', value: chapterCounts.allotted ?? 0,                        tone: 'indigo' },
-        { label: 'Not allotted',   value: chapterCounts['not-allotted'] ?? 0,                        tone: 'gray' },
-        { label: 'Topics left',    value: syllabus.totalItems - syllabus.completedItems,             tone: 'amber' },
-      ]} />
-
-      <div className="flex items-center gap-2 px-5 py-3 border-b border-gray-100 flex-wrap">
-        <div className="flex gap-1">
-          {SUBJECT_FILTERS.map(f => (
-            <Chip key={f.key} active={filter === f.key} onClick={() => setFilter(f.key)}
-              tone={f.key === 'completed' ? 'emerald' : f.key === 'not-started' ? 'gray' : 'indigo'}>
-              {f.label} {counts[f.key]}
-            </Chip>
-          ))}
+      subtitle={`Every topic this student has to cover. A topic is Done when the mentor has finished teaching it and the student attended ${
+        thresholdPercent != null ? `at least ${thresholdPercent}%` : 'enough'} of its class time.`}>
+      {paper && (
+        <div className="flex items-center gap-2 px-5 py-2 bg-indigo-50 border-b border-indigo-100 text-xs text-indigo-700">
+          Showing <b>{paper.name}</b> only
+          <button type="button" onClick={() => setPaperId('')} className="ml-1 font-semibold underline hover:text-indigo-900">
+            Show all papers
+          </button>
         </div>
-        <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search subject, chapter or topic…"
-          className={`${inputCls} ml-auto w-56`} />
-      </div>
-      {/* Where each topic stands on the ladder — the filter to find "allotted
-          but never attended" for this student. */}
-      <div className="flex items-center gap-1 px-5 py-2 border-b border-gray-100 flex-wrap">
-        <span className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide mr-1">Status</span>
-        {STATUS_FILTERS.map(f => (
-          <Chip key={f.key} active={rowFilter === f.key} onClick={() => setRowFilter(f.key)} tone={f.tone}>
-            {f.label} {statusCount(f.key)}
-          </Chip>
+      )}
+      <Tallies title="Syllabus" items={[
+        { label: 'Topics done',   value: `${totals.completedItems} of ${totals.totalItems}`,         tone: 'emerald' },
+        { label: 'Chapters done', value: `${totals.completedChapters} of ${totals.totalChapters}`,   tone: 'emerald' },
+        paper
+          ? { label: 'Paper', value: PAPER_STATUS[paper.status]?.label || '—', tone: PAPER_STATUS[paper.status]?.tone }
+          : { label: 'Papers done', value: `${syllabus.completedSubjects} of ${syllabus.totalSubjects}`, tone: 'emerald' },
+        { label: 'Topics left',   value: totals.totalItems - totals.completedItems,                  tone: 'amber' },
+      ]} />
+      {/* Counted once per class — a class that covers two chapters is one class. */}
+      {classTotals && (
+        <Tallies title="Classes" items={[
+          { label: 'Booked',     value: classTotals.booked, hint: 'Every class this student was put in or joined, held or still to come' },
+          { label: 'Held so far', value: classTotals.held,  hint: 'Classes that have already happened' },
+          { label: 'Attended',   value: classTotals.attended, tone: 'emerald',
+            hint: `Present — in class ${thresholdPercent != null ? `at least ${thresholdPercent}%` : 'enough'} of the time` },
+          { label: 'Missed',     value: classTotals.missed, tone: classTotals.missed ? 'rose' : 'gray',
+            hint: 'Held, but the student was absent or left too early' },
+          ...(classTotals.live ? [{ label: 'Live now', value: classTotals.live, tone: 'rose' }] : []),
+          { label: 'Upcoming',   value: classTotals.upcoming, tone: 'indigo',
+            hint: classTotals.nextClassAt ? `Next class ${fmtDay(classTotals.nextClassAt)}, ${fmtTime(classTotals.nextClassAt)}` : 'Nothing scheduled' },
+        ]} />
+      )}
+
+      {/* One filter row: where each topic stands. Counts are topics, the same
+          numbers the subject cards show. */}
+      <div className="flex items-center gap-1 px-5 py-3 border-b border-gray-100 flex-wrap">
+        <span className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide mr-1">Show topics</span>
+        <Chip active={rowFilter === 'all'} onClick={() => setRowFilter('all')}>All {totals.totalItems}</Chip>
+        {TOPIC_STATES.map(s => (
+          <span key={s.key} title={s.help}>
+            <Chip active={rowFilter === s.key} onClick={() => setRowFilter(s.key)} tone={s.tone}>
+              {s.label} {stateCounts[s.key]}
+            </Chip>
+          </span>
         ))}
+        <div className="flex items-center gap-2 ml-auto">
+          <select value={paper ? paperId : ''} onChange={e => setPaperId(e.target.value)} className={`${inputCls} max-w-[220px]`}>
+            <option value="">All papers ({syllabus.subjects.length})</option>
+            {syllabus.subjects.map(s => (
+              <option key={s.subjectId} value={s.subjectId}>{s.name} — {s.completedItems}/{s.totalItems} done</option>
+            ))}
+          </select>
+          <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search subject, chapter or topic…"
+            className={`${inputCls} w-56`} />
+          {onMark && (
+            <button type="button" onClick={() => setEditing(e => !e)} disabled={!!busyKey}
+              className={`text-xs font-semibold px-3 py-1.5 rounded-lg transition-colors whitespace-nowrap disabled:opacity-50 ${
+                editing ? 'bg-indigo-600 text-white hover:bg-indigo-700' : 'border border-gray-200 text-gray-600 hover:bg-gray-50'}`}>
+              {editing ? 'Done' : 'Edit marks'}
+            </button>
+          )}
+        </div>
       </div>
+
+      {editing && (
+        <p className="px-5 py-2 text-[11px] text-indigo-700 bg-indigo-50 border-b border-indigo-100">
+          Correcting by hand: ✓ marks a topic done, ✗ marks the student absent. Click the same button again to remove the mark.
+          Use this only for classes taken outside the LMS.
+        </p>
+      )}
 
       <div className="p-4 space-y-2">
         {!syllabus.subjects.length ? (
           <Empty title="Nothing to show yet"
-            hint="This student has no enrolled level and hasn't attended or been allotted a class tied to a chapter." />
+            hint="This student has no enrolled level and hasn't attended or been booked into a class tied to a chapter." />
         ) : !visible.length ? (
           <Empty title="No match" hint="Nothing here matches the current filter." />
         ) : visible.map(s => (
-          <SubjectCard key={s.subjectId} subject={s} query={query} rowFilter={rowFilter} defaultOpen={visible.length <= 3}
-            onMark={onMark} busyKey={busyKey} />
+          <SubjectCard key={s.subjectId} subject={s} query={query} rowFilter={rowFilter} defaultOpen={visible.length <= 3} forceOpen={!!paper}
+            onMark={editing ? onMark : null} busyKey={busyKey} threshold={thresholdPercent} />
         ))}
       </div>
     </Section>
@@ -614,7 +699,7 @@ function AttendanceSection({ studentId }) {
                       <td className="px-5 py-3 max-w-[240px]">
                         <p className="text-gray-700 truncate" title={r.subject?.name}>{r.subject?.name || '—'}</p>
                         <p className="text-[11px] text-gray-400 truncate">
-                          {[r.chapter?.name, r.unit?.name].filter(Boolean).join(' · ') || '—'}
+                          {logTopics(r) || '—'}
                         </p>
                       </td>
                       <td className="px-5 py-3 text-gray-600 whitespace-nowrap">{r.tutor || '—'}</td>
@@ -987,6 +1072,7 @@ export default function StudentProgressPage() {
     return () => clearTimeout(t)
   }, [note])
   async function markRow(row, mark) {
+    if (busyKey) return   // one save at a time
     const key = `${row.subjectId}|${row.chapterId}|${row.unitId || ''}`
     setBusyKey(key)
     try {
@@ -1033,7 +1119,7 @@ export default function StudentProgressPage() {
     )
   }
 
-  const { student, syllabus, attendance, tests, lectures, forecast, thresholdPercent } = report
+  const { student, syllabus, classes, attendance, tests, lectures, forecast, thresholdPercent } = report
 
   return (
     <div className="p-6 space-y-5">
@@ -1098,7 +1184,7 @@ export default function StudentProgressPage() {
           hint={forecast.estimatedCompletion ? `Projected from ${forecast.basedOn} completed topics` : undefined} />
       </div>
 
-      <SyllabusSection syllabus={syllabus} thresholdPercent={thresholdPercent} onMark={markRow} busyKey={busyKey} />
+      <SyllabusSection syllabus={syllabus} classes={classes} thresholdPercent={thresholdPercent} onMark={markRow} busyKey={busyKey} />
       <AttendanceSection studentId={id} />
       <TestMarksSection studentId={id} bySubject={tests.bySubject} />
       <LecturesSection studentId={id} />
