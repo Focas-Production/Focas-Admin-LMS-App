@@ -99,6 +99,9 @@ function SubmissionsView({ showToast, onShowHidden }) {
   const [detailId, setDetailId] = useState(null)   // submission opened in the detail modal
   const [hideRow, setHideRow] = useState(null)     // submission in the "Hide paper" dialog
   const [hiddenCount, setHiddenCount] = useState(0) // hidden papers — excluded from everything here
+  const [marksFilter, setMarksFilter] = useState(null) // null = all, else a totalMarks value (0 = no marks set)
+  const [search, setSearch] = useState('')             // student name / phone, as typed
+  const [query, setQuery] = useState('')               // debounced copy of search sent to the API
 
   const evaluatedMode = dateBy === 'evaluated'
 
@@ -114,6 +117,8 @@ function SubmissionsView({ showToast, onShowHidden }) {
     const params = new URLSearchParams({ page, limit })
     if (status) params.set('status', status)
     if (mentorFilter) params.set('mentorId', mentorFilter)
+    if (marksFilter !== null) params.set('totalMarks', marksFilter)
+    if (query) params.set('q', query)
     applyDateParams(params)
     apiFetch(`/api/admin/test-submissions?${params.toString()}`)
       .then(d => {
@@ -135,7 +140,11 @@ function SubmissionsView({ showToast, onShowHidden }) {
       .then(d => { setStats(d.stats || []); setTotals(d.totals || null) })
       .catch(() => { setStats([]); setTotals(null) })
   }
-  useEffect(() => { load() }, [status, page, limit, mentorFilter, dateBy, dateFrom, dateTo])
+  useEffect(() => { load() }, [status, page, limit, mentorFilter, marksFilter, query, dateBy, dateFrom, dateTo])
+  useEffect(() => {
+    const t = setTimeout(() => { setQuery(search.trim()); setPage(1) }, 350)
+    return () => clearTimeout(t)
+  }, [search])
   useEffect(() => { loadStats() }, [dateBy, dateFrom, dateTo])
   useEffect(() => {
     apiFetch('/api/admin/mentors').then(d => setMentors(d.mentors || [])).catch(() => {})
@@ -145,6 +154,7 @@ function SubmissionsView({ showToast, onShowHidden }) {
   const onStatus   = (v) => { setStatus(v); setPage(1) }
   const onLimit    = (v) => { setLimit(v); setPage(1) }
   const onMentor   = (v) => { setMentorFilter(v); setPage(1) }
+  const onMarks    = (v) => { setMarksFilter(m => (m === v ? null : v)); setPage(1) }
   const onDateFrom = (v) => { setDateFrom(v); setPage(1) }
   const onDateTo   = (v) => { setDateTo(v); setPage(1) }
   const clearDates = () => { setDateFrom(''); setDateTo(''); setPage(1) }
@@ -255,12 +265,26 @@ function SubmissionsView({ showToast, onShowHidden }) {
       )}
 
       {/* Per-paper-marks breakdown (25 / 50 / 100 mark papers) */}
-      {marksBreakdown.length > 0 && <MarksBreakdown items={marksBreakdown} evaluatedOnly={evaluatedMode} />}
+      {marksBreakdown.length > 0 && (
+        <MarksBreakdown items={marksBreakdown} evaluatedOnly={evaluatedMode} value={marksFilter} onChange={onMarks} />
+      )}
 
       {stats !== null && stats.length > 0 && (
         <MentorFilter stats={stats} totals={totals} value={mentorFilter} onChange={onMentor}
           status={status} onStatus={onStatus} evaluatedOnly={evaluatedMode} />
       )}
+
+      {/* Student search (name or phone) */}
+      <div className="flex items-center gap-2 mb-3">
+        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search student name or phone…"
+          className="w-full sm:w-72 px-3 py-1.5 text-xs border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-400" />
+        {search && (
+          <button onClick={() => setSearch('')}
+            className="px-3 py-1.5 rounded-lg text-xs font-semibold border border-gray-200 text-gray-500 hover:text-gray-800 hover:bg-gray-50">
+            ✕ Clear
+          </button>
+        )}
+      </div>
 
       {rows === null ? (
         <p className="text-sm text-gray-400">Loading…</p>
@@ -268,6 +292,8 @@ function SubmissionsView({ showToast, onShowHidden }) {
         <p className="text-sm text-gray-500">
           No {evaluatedMode ? 'evaluated papers' : 'submissions'}{status ? ` with status "${status}"` : ''}
           {selected ? ` for ${mentorLabel(selected)}` : ''}
+          {marksFilter !== null ? ` for ${marksFilter ? `${marksFilter}-mark` : 'no-marks'} papers` : ''}
+          {query ? ` matching "${query}"` : ''}
           {dateFrom || dateTo ? ' in the selected date range' : ''} yet.
         </p>
       ) : (
@@ -679,15 +705,22 @@ function TotalsBar({ counts, evaluatedOnly }) {
 // papers are corrected vs still pending (pool + in progress) under the current filters.
 // On the evaluated basis every paper is corrected, so only the evaluated count is shown —
 // handy when the mentor rate differs per paper size.
-function MarksBreakdown({ items, evaluatedOnly }) {
+// Clicking a tile filters the list to that paper size; clicking it again clears the filter.
+function MarksBreakdown({ items, evaluatedOnly, value, onChange }) {
   return (
     <div className="mb-4">
-      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">By paper marks</p>
+      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
+        By paper marks <span className="normal-case font-normal text-gray-400">— click to filter</span>
+      </p>
       <div className="flex flex-wrap gap-2">
         {items.map(m => {
           const incomplete = (m.pending || 0) + (m.assigned || 0)
+          const active = value === m.totalMarks
           return (
-            <div key={m.totalMarks} className="px-3.5 py-2.5 rounded-xl border border-gray-200 bg-white min-w-[150px]">
+            <button type="button" key={m.totalMarks} onClick={() => onChange(m.totalMarks)} aria-pressed={active}
+              className={`text-left px-3.5 py-2.5 rounded-xl border min-w-[150px] transition-colors ${
+                active ? 'border-indigo-500 bg-indigo-50 ring-1 ring-indigo-500' : 'border-gray-200 bg-white hover:bg-gray-50'
+              }`}>
               <p className="text-sm font-bold text-gray-900 leading-none">
                 {m.totalMarks ? `${m.totalMarks} marks` : 'No marks set'}
                 <span className="ml-1.5 text-[11px] font-medium text-gray-400">{m.total} papers</span>
@@ -698,9 +731,15 @@ function MarksBreakdown({ items, evaluatedOnly }) {
                   <span className={`font-semibold ${incomplete ? 'text-amber-600' : 'text-gray-300'}`}>{incomplete} pending</span>
                 )}
               </div>
-            </div>
+            </button>
           )
         })}
+        {value !== null && (
+          <button type="button" onClick={() => onChange(value)}
+            className="self-center px-3 py-1.5 rounded-lg text-xs font-semibold border border-gray-200 text-gray-500 hover:text-gray-800 hover:bg-gray-50">
+            ✕ All marks
+          </button>
+        )}
       </div>
     </div>
   )
