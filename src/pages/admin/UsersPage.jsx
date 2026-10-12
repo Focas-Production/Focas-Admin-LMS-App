@@ -145,6 +145,7 @@ function AccessModal({ user, onClose, onUpdated }) {
 }
 
 function AddUserModal({ onClose, onCreated }) {
+  const [role,  setRole]  = useState('student')
   const [name,  setName]  = useState('')
   const [phone, setPhone] = useState('')
   const [email, setEmail] = useState('')
@@ -159,6 +160,7 @@ function AddUserModal({ onClose, onCreated }) {
       await apiFetch('/api/admin/users', {
         method: 'POST',
         body: JSON.stringify({
+          role,
           name: name.trim(),
           phoneNumber: phone,
           email: email.trim(),
@@ -180,7 +182,7 @@ function AddUserModal({ onClose, onCreated }) {
         <div className="px-5 py-4 border-b flex items-center justify-between">
           <div>
             <h2 className="font-bold text-gray-900">Add User</h2>
-            <p className="text-xs text-gray-400 mt-0.5">Role: Student · Source: Custom</p>
+            <p className="text-xs text-gray-400 mt-0.5">Role: {role === 'mentor' ? 'Mentor' : 'Student'} · Source: Custom</p>
           </div>
           <button onClick={onClose} className="w-7 h-7 rounded-full flex items-center justify-center hover:bg-gray-100">
             <svg className="w-4 h-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -191,8 +193,24 @@ function AddUserModal({ onClose, onCreated }) {
 
         <div className="px-5 py-4 space-y-4">
           <div>
+            <label className="block text-xs font-semibold text-gray-600 mb-1.5">Role</label>
+            <div className="grid grid-cols-2 gap-1 p-1 bg-gray-100 rounded-xl">
+              {[['student', 'Student'], ['mentor', 'Mentor']].map(([val, label]) => (
+                <button key={val} type="button" onClick={() => setRole(val)}
+                  className={`py-2 text-sm font-semibold rounded-lg transition-colors ${
+                    role === val ? 'bg-white text-indigo-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>
+                  {label}
+                </button>
+              ))}
+            </div>
+            {role === 'mentor' && (
+              <p className="text-xs text-gray-400 mt-1.5">Logs in with this phone number (OTP) and gets the mentor panel. Assign their subjects later in Test Series → Mentor Assignments.</p>
+            )}
+          </div>
+
+          <div>
             <label className="block text-xs font-semibold text-gray-600 mb-1.5">Name</label>
-            <input value={name} onChange={e => setName(e.target.value)} placeholder="Student name"
+            <input value={name} onChange={e => setName(e.target.value)} placeholder={role === 'mentor' ? 'Mentor name' : 'Student name'}
               className="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500" />
           </div>
 
@@ -227,7 +245,7 @@ function AddUserModal({ onClose, onCreated }) {
           </button>
           <button onClick={handleSave} disabled={saving || phone.length !== 10}
             className="px-4 py-2 text-sm font-semibold text-white bg-indigo-600 rounded-xl hover:bg-indigo-700 disabled:opacity-50">
-            {saving ? 'Adding…' : 'Add User'}
+            {saving ? 'Adding…' : role === 'mentor' ? 'Add Mentor' : 'Add User'}
           </button>
         </div>
       </div>
@@ -989,6 +1007,47 @@ const ICON_CALENDAR = 'M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5
 const ICON_CHECK    = 'M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z'
 const ICON_BOLT     = 'M13 10V3L4 14h7v7l9-11h-7z'
 
+// Page numbers to show: always first + last, and two either side of the
+// current page, with null marking a gap ("…").
+function pageList(page, totalPages) {
+  const out = []
+  for (let p = 1; p <= totalPages; p++) {
+    if (p === 1 || p === totalPages || Math.abs(p - page) <= 2) out.push(p)
+    else if (out[out.length - 1] !== null) out.push(null)
+  }
+  return out
+}
+
+function Pagination({ page, totalPages, total, pageSize, onPage, onPageSize }) {
+  const from = (page - 1) * pageSize + 1
+  const to   = Math.min(page * pageSize, total)
+  const nav  = 'min-w-[2rem] h-8 px-2 text-sm rounded-lg border border-gray-200 bg-white hover:bg-gray-50 disabled:opacity-40 disabled:hover:bg-white'
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3 mt-4">
+      <div className="flex items-center gap-3 text-sm text-gray-500">
+        <span>Showing <b className="text-gray-800">{from}–{to}</b> of <b className="text-gray-800">{total}</b></span>
+        <select value={pageSize} onChange={e => onPageSize(Number(e.target.value))}
+          className="h-8 px-2 text-sm border border-gray-200 rounded-lg bg-white outline-none focus:ring-2 focus:ring-indigo-500">
+          {[20, 50, 100].map(n => <option key={n} value={n}>{n} / page</option>)}
+        </select>
+      </div>
+      <div className="flex items-center gap-1">
+        <button className={nav} onClick={() => onPage(1)} disabled={page === 1} title="First page">«</button>
+        <button className={nav} onClick={() => onPage(page - 1)} disabled={page === 1} title="Previous page">‹</button>
+        {pageList(page, totalPages).map((p, i) => p === null
+          ? <span key={`gap${i}`} className="px-1 text-gray-400">…</span>
+          : <button key={p} onClick={() => onPage(p)}
+              className={p === page
+                ? 'min-w-[2rem] h-8 px-2 text-sm rounded-lg bg-indigo-600 text-white font-semibold'
+                : nav}>{p}</button>
+        )}
+        <button className={nav} onClick={() => onPage(page + 1)} disabled={page === totalPages} title="Next page">›</button>
+        <button className={nav} onClick={() => onPage(totalPages)} disabled={page === totalPages} title="Last page">»</button>
+      </div>
+    </div>
+  )
+}
+
 const CHIP_TONES = {
   amber:   'bg-amber-100 text-amber-700',
   emerald: 'bg-emerald-100 text-emerald-700',
@@ -1005,9 +1064,37 @@ function FilterChip({ active, onClick, tone, children }) {
   )
 }
 
+const TAG_TONES = {
+  teal:   'bg-teal-100 text-teal-700',
+  indigo: 'bg-indigo-100 text-indigo-700',
+  gray:   'bg-gray-200 text-gray-600',
+  amber:  'bg-amber-100 text-amber-700',
+}
+
+function Tag({ tone, children }) {
+  return <span className={`inline-block text-[10px] font-semibold px-1.5 py-0.5 rounded-md whitespace-nowrap ${TAG_TONES[tone]}`}>{children}</span>
+}
+
+const timesLabel = (n) => `${n} time${n === 1 ? '' : 's'}`
+
+// The plain-words tags under one chapter of the mentor syllabus modal.
+function ChapterTags({ ch }) {
+  const classes = ch.sessions || 0
+  const times = ch.timesCompleted || 0
+  return (
+    <>
+      {times > 0 && <Tag tone="teal">Completed {timesLabel(times)}</Tag>}
+      {classes > 0 && <Tag tone="gray">Taught in {classes} class{classes === 1 ? '' : 'es'}</Tag>}
+      {classes > 0 && times === 0 && <Tag tone="amber">Taught, not finished</Tag>}
+      {classes === 0 && times > 0 && <Tag tone="gray">Marked done without a class</Tag>}
+      {classes === 0 && times === 0 && <Tag tone="gray">Not taught yet</Tag>}
+    </>
+  )
+}
+
 function MentorSyllabusModal({ mentor, onClose }) {
   const [subjects, setSubjects] = useState(null)   // null = loading
-  const [filter, setFilter] = useState('pending')  // pending | done | all
+  const [filter, setFilter] = useState('all')      // pending | done | all
   const [query, setQuery] = useState('')
   const [openIds, setOpenIds] = useState(() => new Set())
   const [touched, setTouched] = useState(false)
@@ -1078,6 +1165,14 @@ function MentorSyllabusModal({ mentor, onClose }) {
           </div>
         )}
 
+        {subjects && allChapters.length > 0 && (
+          <div className="mx-5 mt-3 px-3 py-2 rounded-lg bg-gray-50 text-[11px] text-gray-500 leading-relaxed flex-shrink-0">
+            <p><Tag tone="teal">Completed 2 times</Tag> the mentor finished this chapter in 2 separate classes (e.g. for 2 batches).</p>
+            <p className="mt-1"><Tag tone="gray">Taught in 3 classes</Tag> how many classes this mentor held on the chapter.</p>
+            <p className="mt-1"><Tag tone="amber">Taught, not finished</Tag> classes were held but the mentor never ticked it completed.</p>
+          </div>
+        )}
+
         <div className="px-5 py-4 overflow-y-auto">
           {subjects === null ? (
             <div className="space-y-3">{[1, 2, 3].map(i => <div key={i} className="h-12 bg-gray-100 rounded-xl animate-pulse" />)}</div>
@@ -1116,7 +1211,12 @@ function MentorSyllabusModal({ mentor, onClose }) {
                           <div className="h-1.5 bg-gray-100 rounded-full flex-1 max-w-[160px] overflow-hidden">
                             <div className="h-full bg-teal-400 rounded-full transition-all" style={{ width: `${pct}%` }} />
                           </div>
-                          <span className="text-[11px] text-gray-400 flex-shrink-0">{subj.done}/{subj.total} done</span>
+                          <span className="text-[11px] text-gray-400 flex-shrink-0">{subj.done} of {subj.total} chapters done</span>
+                        </div>
+                        <div className="flex flex-wrap gap-1.5 mt-1.5">
+                          <Tag tone="teal">Chapters completed: {subj.done}</Tag>
+                          <Tag tone="indigo">Total completions: {subj.timesCompleted || 0}</Tag>
+                          <Tag tone="gray">Classes taken: {subj.sessions || 0}</Tag>
                         </div>
                       </div>
                       {!open && (
@@ -1134,13 +1234,16 @@ function MentorSyllabusModal({ mentor, onClose }) {
                             <span className={`w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-bold flex-shrink-0 ${
                               ch.completed ? 'bg-teal-500 text-white' : 'bg-white border border-gray-300 text-transparent'}`}>✓</span>
                             <p className={`text-sm font-medium flex-1 truncate ${ch.completed ? 'text-teal-700' : 'text-gray-700'}`}>{ch.name}</p>
-                            {ch.completed && ch.completedBy?.name && <span className="text-[10px] text-gray-400 flex-shrink-0">by {ch.completedBy.name}</span>}
+                          </div>
+                          <div className="flex flex-wrap gap-1.5 mt-1.5 pl-6">
+                            <ChapterTags ch={ch} />
                           </div>
                           {(ch.units || []).length > 0 && (
                             <div className="flex flex-wrap gap-1.5 mt-1.5 pl-6">
                               {ch.units.map(u => (
                                 <span key={u._id} className={`text-[11px] px-2 py-0.5 rounded-md ${u.completed ? 'bg-teal-100 text-teal-800' : 'bg-gray-100 text-gray-500'}`}>
                                   {u.completed ? '✓' : '○'} {u.name}
+                                  {u.timesCompleted > 0 && <b className="ml-1">· completed {timesLabel(u.timesCompleted)}</b>}
                                 </span>
                               ))}
                             </div>
@@ -1169,6 +1272,7 @@ export default function UsersPage() {
   const [users,   setUsers]   = useState([])
   const [total,   setTotal]   = useState(0)
   const [page,    setPage]    = useState(1)
+  const [pageSize, setPageSize] = useState(20)
   const [search,  setSearch]  = useState('')
   const [loading, setLoading] = useState(true)
   const [grantUser,    setGrantUser]    = useState(null)
@@ -1183,16 +1287,18 @@ export default function UsersPage() {
 
   function load() {
     setLoading(true)
-    const query = new URLSearchParams({ page, limit: 20, ...(search && { search }) })
+    const query = new URLSearchParams({ page, limit: pageSize, ...(search && { search }) })
     apiFetch(`/api/admin/users?${query}`)
       .then(d => { setUsers(d.users || []); setTotal(d.pagination?.total || 0) })
       .catch(() => {})
       .finally(() => setLoading(false))
   }
 
-  useEffect(() => { load() }, [page, search])
+  useEffect(() => { load() }, [page, pageSize, search])
+  // AdminLayout's <main> is the scroller — jump back to the top on a new page.
+  useEffect(() => { document.querySelector('main')?.scrollTo({ top: 0 }) }, [page, pageSize])
 
-  const totalPages = Math.ceil(total / 20)
+  const totalPages = Math.max(1, Math.ceil(total / pageSize))
 
   return (
     <div className="p-6">
@@ -1227,9 +1333,6 @@ export default function UsersPage() {
               <th className="text-left px-5 py-3.5">Phone</th>
               <th className="text-left px-5 py-3.5">Email</th>
               <th className="text-left px-5 py-3.5">Role</th>
-              <th className="text-left px-5 py-3.5">Device</th>
-              <th className="text-left px-5 py-3.5">Last Login</th>
-              <th className="text-left px-5 py-3.5">Enrolled</th>
               <th className="text-left px-5 py-3.5">Joined</th>
               <th className="px-5 py-3.5" />
             </tr>
@@ -1238,19 +1341,14 @@ export default function UsersPage() {
             {loading ? (
               Array(8).fill(0).map((_, i) => (
                 <tr key={i} className="border-b border-gray-50">
-                  {Array(9).fill(0).map((_, j) => (
+                  {Array(6).fill(0).map((_, j) => (
                     <td key={j} className="px-5 py-3.5"><div className="h-4 bg-gray-100 rounded animate-pulse w-24" /></td>
                   ))}
                 </tr>
               ))
             ) : users.length === 0 ? (
-              <tr><td colSpan={9} className="px-5 py-10 text-center text-gray-400">No users found</td></tr>
+              <tr><td colSpan={6} className="px-5 py-10 text-center text-gray-400">No users found</td></tr>
             ) : users.map(u => {
-              const courses = [
-                ...(u.access?.website?.courses || []),
-                ...(u.access?.shopify?.courses  || []),
-                ...(u.access?.combo?.courses    || []),
-              ]
               return (
                 <tr key={u._id} onClick={() => setDetailUser(u)}
                   className="border-b border-gray-50 hover:bg-gray-50 transition-colors cursor-pointer">
@@ -1279,26 +1377,6 @@ export default function UsersPage() {
                         {u.caAttempt ? ` · ${u.caAttempt}` : ''}
                       </span>
                     )}
-                  </td>
-                  <td className="px-5 py-3.5">
-                    {u.activeSession ? (
-                      <div className="flex items-center gap-2">
-                        <span className="inline-block w-2 h-2 bg-green-500 rounded-full"></span>
-                        <span className="text-xs text-gray-700 font-medium">{u.activeSession.deviceName || '—'}</span>
-                        <span className="text-xs text-gray-400">({u.activeSession.deviceType || '—'})</span>
-                      </div>
-                    ) : (
-                      <span className="text-xs text-gray-300">Not logged in</span>
-                    )}
-                  </td>
-                  <td className="px-5 py-3.5 text-gray-400 text-xs">
-                    {u.activeSession?.lastLoginTime ? fmtDate(u.activeSession.lastLoginTime) : '—'}
-                  </td>
-                  <td className="px-5 py-3.5">
-                    {courses.length > 0
-                      ? <span className="text-xs font-semibold bg-green-100 text-green-700 px-2 py-0.5 rounded-full">{courses.length} course{courses.length !== 1 ? 's' : ''}</span>
-                      : <span className="text-xs text-gray-300">None</span>
-                    }
                   </td>
                   <td className="px-5 py-3.5 text-gray-400 text-xs">{fmtDate(u.createdAt)}</td>
                   <td className="px-5 py-3.5" onClick={e => e.stopPropagation()}>
@@ -1363,18 +1441,13 @@ export default function UsersPage() {
           </tbody>
         </table>
 
-        {totalPages > 1 && (
-          <div className="flex items-center justify-between px-5 py-3.5 border-t border-gray-100">
-            <p className="text-sm text-gray-400">Page {page} of {totalPages}</p>
-            <div className="flex gap-2">
-              <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}
-                className="px-3 py-1.5 text-sm border border-gray-200 rounded-lg disabled:opacity-40 hover:bg-gray-50">Previous</button>
-              <button onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page === totalPages}
-                className="px-3 py-1.5 text-sm border border-gray-200 rounded-lg disabled:opacity-40 hover:bg-gray-50">Next</button>
-            </div>
-          </div>
-        )}
       </div>
+
+      {total > 0 && (
+        <Pagination page={page} totalPages={totalPages} total={total} pageSize={pageSize}
+          onPage={setPage}
+          onPageSize={n => { setPageSize(n); setPage(1) }} />
+      )}
 
       {grantUser && (
         <GrantModal
