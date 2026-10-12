@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { apiFetch } from '../../api'
 import { CA_LEVELS, CA_GROUPS, groupLabel, ATTEMPT_MONTHS, upcomingAttempts } from '../../lib/ca'
@@ -922,6 +922,73 @@ function UserDetailDrawer({ user, onClose }) {
 // What a mentor has taught and marked done, scoped to just their own subjects
 // (classes they've hosted) — the same syllabus-progress data mentors see in
 // their own portal, viewed read-only from the admin side.
+// A button that opens a small menu of related actions (Grant + Manage access,
+// Test limit + AI limit) — keeps each user row short. The menu is
+// position:fixed so the table's horizontal scroll box can't clip it.
+// items: [{ label, icon (svg path d), className, onClick }]
+function MenuButton({ label, icon, className, items }) {
+  const [pos, setPos] = useState(null)
+  const btnRef = useRef(null)
+
+  useEffect(() => {
+    if (!pos) return
+    const close = () => setPos(null)
+    window.addEventListener('scroll', close, true)
+    window.addEventListener('resize', close)
+    return () => {
+      window.removeEventListener('scroll', close, true)
+      window.removeEventListener('resize', close)
+    }
+  }, [pos])
+
+  function toggle() {
+    if (pos) return setPos(null)
+    const r = btnRef.current.getBoundingClientRect()
+    const menuH = items.length * 36 + 12
+    const top = r.bottom + 4 + menuH > window.innerHeight ? r.top - 4 - menuH : r.bottom + 4
+    setPos({ top, left: r.left })
+  }
+
+  function pick(fn) { setPos(null); fn() }
+
+  return (
+    <>
+      <button ref={btnRef} onClick={toggle}
+        className={`flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg transition-colors whitespace-nowrap ${className}`}>
+        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={icon} />
+        </svg>
+        {label}
+        <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+      {pos && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setPos(null)} />
+          <div className="fixed z-50 w-44 bg-white rounded-xl shadow-lg border border-gray-100 py-1"
+            style={{ top: pos.top, left: pos.left }}>
+            {items.map(it => (
+              <button key={it.label} onClick={() => pick(it.onClick)}
+                className={`w-full flex items-center gap-2 px-3 py-2 text-xs font-semibold text-left ${it.className}`}>
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={it.icon} />
+                </svg>
+                {it.label}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </>
+  )
+}
+
+const ICON_PLUS     = 'M12 6v6m0 0v6m0-6h6m-6 0H6'
+const ICON_CALENDAR = 'M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z'
+const ICON_CHECK    = 'M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z'
+const ICON_BOLT     = 'M13 10V3L4 14h7v7l9-11h-7z'
+
 const CHIP_TONES = {
   amber:   'bg-amber-100 text-amber-700',
   emerald: 'bg-emerald-100 text-emerald-700',
@@ -1152,8 +1219,8 @@ export default function UsersPage() {
         </div>
       </div>
 
-      <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
-        <table className="w-full text-sm">
+      <div className="bg-white rounded-2xl shadow-sm overflow-x-auto">
+        <table className="w-full min-w-max text-sm">
           <thead>
             <tr className="border-b border-gray-100 text-xs font-semibold text-gray-400 uppercase tracking-wide">
               <th className="text-left px-5 py-3.5">Name</th>
@@ -1275,34 +1342,18 @@ export default function UsersPage() {
                           </svg>
                           Progress
                         </button>
-                        <button onClick={() => setGrantUser(u)}
-                          className="flex items-center gap-1.5 text-xs font-semibold text-indigo-600 bg-indigo-50 px-3 py-1.5 rounded-lg hover:bg-indigo-100 transition-colors whitespace-nowrap">
-                          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
-                          </svg>
-                          Grant
-                        </button>
-                        <button onClick={() => setAccessUser(u)}
-                          className="flex items-center gap-1.5 text-xs font-semibold text-blue-600 bg-blue-50 px-3 py-1.5 rounded-lg hover:bg-blue-100 transition-colors whitespace-nowrap">
-                          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                          </svg>
-                          Access
-                        </button>
-                        <button onClick={() => setLimitUser(u)}
-                          className="flex items-center gap-1.5 text-xs font-semibold text-amber-600 bg-amber-50 px-3 py-1.5 rounded-lg hover:bg-amber-100 transition-colors whitespace-nowrap">
-                          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                          </svg>
-                          Limit
-                        </button>
-                        <button onClick={() => setAiLimitUser(u)}
-                          className="flex items-center gap-1.5 text-xs font-semibold text-violet-600 bg-violet-50 px-3 py-1.5 rounded-lg hover:bg-violet-100 transition-colors whitespace-nowrap">
-                          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                          </svg>
-                          AI Limit
-                        </button>
+                        <MenuButton label="Access" icon={ICON_CALENDAR}
+                          className="text-blue-600 bg-blue-50 hover:bg-blue-100"
+                          items={[
+                            { label: 'Grant course',  icon: ICON_PLUS,     className: 'text-indigo-600 hover:bg-indigo-50', onClick: () => setGrantUser(u) },
+                            { label: 'Manage access', icon: ICON_CALENDAR, className: 'text-blue-600 hover:bg-blue-50',     onClick: () => setAccessUser(u) },
+                          ]} />
+                        <MenuButton label="Limit" icon={ICON_CHECK}
+                          className="text-amber-600 bg-amber-50 hover:bg-amber-100"
+                          items={[
+                            { label: 'Test limit', icon: ICON_CHECK, className: 'text-amber-600 hover:bg-amber-50',   onClick: () => setLimitUser(u) },
+                            { label: 'AI limit',   icon: ICON_BOLT,  className: 'text-violet-600 hover:bg-violet-50', onClick: () => setAiLimitUser(u) },
+                          ]} />
                       </div>
                     )}
                   </td>
