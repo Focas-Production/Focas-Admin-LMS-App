@@ -38,6 +38,7 @@ const QUICK_VIEWS = [
   { to: '/admin/live-classes',     label: 'Schedule' },
   { to: '/admin/test-series',      label: 'Tests' },
   { to: '/admin/chapter-progress', label: 'Chapter Progress' },
+  { to: '/admin/class-feedback',   label: 'Class Feedback' },
   { to: '/admin/purchases',        label: 'Payments' },
   { to: '/admin/sales',            label: 'Sales' },
   { to: '/admin/products',         label: 'Products' },
@@ -101,6 +102,9 @@ function QueueCard({ card, onOpen }) {
 
 function ItemRow({ item, busy, onAction, onOpenLink, scenarioByKey }) {
   const chips = (item.tags || []).map(t => scenarioByKey[t]).filter(Boolean)
+  // "Mark reviewed" opens a short note box first — what was done about it.
+  const [noting, setNoting] = useState(false)
+  const [note, setNote] = useState('')
   return (
     <li className="px-5 py-3.5 border-b border-gray-100">
       <div className="flex items-start justify-between gap-3">
@@ -117,6 +121,11 @@ function ItemRow({ item, busy, onAction, onOpenLink, scenarioByKey }) {
             </div>
           )}
           <p className="text-sm text-gray-700 mt-0.5">{item.title}</p>
+          {item.comment && (
+            <p className="text-sm text-gray-800 mt-1 px-3 py-1.5 bg-gray-50 border-l-2 border-amber-300 rounded whitespace-pre-wrap break-words">
+              “{item.comment}”
+            </p>
+          )}
           {item.kind === 'class' && (item.reasons || []).length > 0 && (
             <p className="text-xs font-medium text-red-600 mt-0.5">{item.reasons.join(' · ')}</p>
           )}
@@ -139,6 +148,12 @@ function ItemRow({ item, busy, onAction, onOpenLink, scenarioByKey }) {
               {busy ? 'Saving…' : 'Mark scheduled'}
             </button>
           )}
+          {(item.actions || []).includes('mark-reviewed') && !noting && (
+            <button disabled={busy} onClick={() => setNoting(true)}
+              className="text-xs font-medium px-2.5 py-1 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50">
+              Mark reviewed
+            </button>
+          )}
           {(item.actions || []).includes('mark-followed-up') && (
             <button disabled={busy} onClick={() => onAction(item, 'mark-followed-up')}
               className="text-xs font-medium px-2.5 py-1 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50">
@@ -147,6 +162,21 @@ function ItemRow({ item, busy, onAction, onOpenLink, scenarioByKey }) {
           )}
         </div>
       </div>
+      {noting && (
+        <div className="mt-2.5">
+          <textarea value={note} onChange={e => setNote(e.target.value)} rows={2} maxLength={1000} autoFocus
+            placeholder="What was done? e.g. Called the student, spoke to the mentor (optional)"
+            className="w-full text-sm rounded-lg border border-gray-200 px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none" />
+          <div className="flex justify-end gap-2 mt-1.5">
+            <button disabled={busy} onClick={() => { setNoting(false); setNote('') }}
+              className="text-xs font-medium px-2.5 py-1 rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50">Cancel</button>
+            <button disabled={busy} onClick={() => onAction(item, 'mark-reviewed', note)}
+              className="text-xs font-medium px-2.5 py-1 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50">
+              {busy ? 'Saving…' : 'Save — reviewed'}
+            </button>
+          </div>
+        </div>
+      )}
     </li>
   )
 }
@@ -173,12 +203,14 @@ function Drawer({ listKey, initialScenario, onClose, onChanged }) {
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
 
-  async function act(item, action) {
+  async function act(item, action, note = '') {
     setBusyId(item.id)
     setError('')
     try {
       if (action === 'mark-scheduled') {
         await apiFetch(`/api/admin/purchases/${item.id}/scheduled`, { method: 'PATCH', body: JSON.stringify({ scheduled: true }) })
+      } else if (action === 'mark-reviewed') {
+        await apiFetch(`/api/admin/class-feedback/${item.id}/review`, { method: 'POST', body: JSON.stringify({ done: true, note: note.trim() }) })
       } else if (action === 'mark-followed-up') {
         await apiFetch(`/api/admin/action-center/tests/${item.id}/follow-up`, { method: 'POST', body: JSON.stringify({ done: true }) })
       }
@@ -199,7 +231,7 @@ function Drawer({ listKey, initialScenario, onClose, onChanged }) {
   const items = all
     .filter(i => !scenario || (i.tags || []).includes(scenario))
     .filter(i => !needle ||
-      [i.name, i.phone, i.title, i.detail].some(v => v && String(v).toLowerCase().includes(needle)))
+      [i.name, i.phone, i.title, i.detail, i.comment].some(v => v && String(v).toLowerCase().includes(needle)))
 
   return (
     <div className="fixed inset-0 z-40 flex justify-end">
@@ -384,7 +416,7 @@ export default function ActionCenterPage() {
           {/* 4. Health */}
           <section>
             <SectionTitle className="text-emerald-600">🟢 Health — is the system okay overall</SectionTitle>
-            <div className="bg-white rounded-2xl shadow-sm p-5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-5">
+            <div className="bg-white rounded-2xl shadow-sm p-5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-5">
               {data.health.map(h => {
                 const tone = TONE[h.tone] || TONE.none
                 return (

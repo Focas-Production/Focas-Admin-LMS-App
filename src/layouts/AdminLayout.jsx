@@ -127,6 +127,16 @@ const NAV_ITEMS = [
       </svg>
     ),
   },
+  {
+    to: '/admin/class-feedback',
+    label: 'Class Feedback',
+    icon: (
+      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+          d="M11.48 3.5a.56.56 0 011.04 0l2.13 5.11 5.52.44a.56.56 0 01.32.98l-4.2 3.6 1.28 5.39a.56.56 0 01-.84.61L12 16.73l-4.73 2.9a.56.56 0 01-.84-.61l1.28-5.39-4.2-3.6a.56.56 0 01.32-.98l5.52-.44 2.13-5.11z" />
+      </svg>
+    ),
+  },
 ]
 
 export default function AdminLayout() {

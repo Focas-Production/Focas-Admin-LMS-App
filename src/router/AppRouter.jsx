@@ -17,6 +17,7 @@ import AiQuestionBankPage from '../pages/admin/AiQuestionBankPage'
 import LiveClassesPage from '../pages/admin/LiveClassesPage'
 import ChapterProgressPage from '../pages/admin/ChapterProgressPage'
 import MentorHoursPage from '../pages/admin/MentorHoursPage'
+import ClassFeedbackPage from '../pages/admin/ClassFeedbackPage'
 
 function RootRedirect() {
   const { user, loading } = useAuth()
@@ -43,6 +44,7 @@ export default function AppRouter() {
         <Route path="live-classes" element={<LiveClassesPage />} />
         <Route path="chapter-progress" element={<ChapterProgressPage />} />
         <Route path="mentor-hours" element={<MentorHoursPage />} />
+        <Route path="class-feedback" element={<ClassFeedbackPage />} />
         <Route path="ai-question-bank" element={<AiQuestionBankPage />} />
       </Route>
 
