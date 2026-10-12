@@ -195,7 +195,8 @@ function ReviewState({ row, onReviewed }) {
 }
 
 export default function ClassFeedbackPage() {
-  const [from, setFrom] = useState(() => daysAgo(29))
+  // Opens on today — the admin checks the day's feedback first.
+  const [from, setFrom] = useState(() => daysAgo(0))
   const [to, setTo] = useState(() => daysAgo(0))
   const [summary, setSummary] = useState({ key: null, data: null, error: '' })
 
