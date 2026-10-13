@@ -384,7 +384,7 @@ export default function LiveClassesPage() {
         {!!hallRooms.length && (
           <button onClick={() => setHallForm(newHallForm(hallRooms))}
             className="ml-auto px-4 py-2 rounded-xl text-sm font-semibold bg-violet-600 text-white hover:bg-violet-700">
-            📣 Schedule Hall session
+            📣 FOCAS Schedule Hall Session
           </button>
         )}
       </div>
