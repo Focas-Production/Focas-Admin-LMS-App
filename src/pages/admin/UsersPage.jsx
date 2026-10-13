@@ -1369,7 +1369,7 @@ export default function UsersPage() {
                       {u.isAdmin ? 'Admin' : u.isMentor ? 'Mentor' : 'Student'}
                     </span>
                     {!u.isAdmin && !u.isMentor && (u.caLevel || u.caSubjects?.length > 0) && (
-                      <span className="block text-[10px] text-gray-400 mt-1">
+                      <span className="block text-[10px] text-indigo-500 mt-1">
                         {u.caLevel}
                         {u.caSubjects?.length > 0
                           ? `${u.caLevel ? ' · ' : ''}${u.caSubjects.length} subject${u.caSubjects.length !== 1 ? 's' : ''}`
@@ -1403,14 +1403,16 @@ export default function UsersPage() {
                           title={hasSlotAvailability(u)
                             ? `Slot availability: ${availabilityLabel(u)} — change which slots and days suit this student`
                             : 'No slot availability set yet — pick which of the four slots suit this student, on weekdays and weekends'}
-                          className={`flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg transition-colors whitespace-nowrap ${
+                          className={`w-40 flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg transition-colors whitespace-nowrap ${
                             hasSlotAvailability(u)
                               ? 'text-sky-600 bg-sky-50 hover:bg-sky-100'
                               : 'text-gray-400 bg-gray-50 hover:bg-sky-50 hover:text-sky-600'}`}>
-                          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          {/* Fixed width so the buttons after it line up on
+                              every row; long labels truncate, title has it all. */}
+                          <svg className="w-3.5 h-3.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
                           </svg>
-                          {hasSlotAvailability(u) ? availabilityLabel(u) : 'Slot'}
+                          <span className="truncate">{hasSlotAvailability(u) ? availabilityLabel(u) : 'Slot'}</span>
                         </button>
                         <button onClick={() => navigate(`/admin/users/${u._id}/progress`)}
                           title="Full progress report — syllabus, attendance, test marks, lectures"
