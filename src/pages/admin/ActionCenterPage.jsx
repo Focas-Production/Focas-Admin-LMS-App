@@ -98,13 +98,224 @@ function QueueCard({ card, onOpen }) {
   )
 }
 
+// ── Hide ("X") a row ─────────────────────────────────────────────────────────
+
+const HIDE_FOR = [
+  { days: 0,  label: 'Until I restore it' },
+  { days: 7,  label: '7 days' },
+  { days: 30, label: '30 days' },
+  { days: 90, label: '90 days' },
+]
+
+const dateOf = d => new Date(d).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
+
+function DismissBox({ busy, onCancel, onSave }) {
+  const [note, setNote] = useState('')
+  const [days, setDays] = useState(0)
+  return (
+    <div className="mt-2.5 rounded-lg border border-gray-200 bg-gray-50 p-2.5">
+      <p className="text-xs font-medium text-gray-700 mb-1.5">Remove from this list</p>
+      <textarea value={note} onChange={e => setNote(e.target.value)} rows={2} maxLength={1000} autoFocus
+        placeholder="Why? e.g. uses a different number, left the course, on leave (optional)"
+        className="w-full text-sm rounded-lg border border-gray-200 bg-white px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none" />
+      <div className="flex flex-wrap items-center justify-between gap-2 mt-1.5">
+        <label className="text-xs text-gray-500 flex items-center gap-1.5">
+          Hide
+          <select value={days} onChange={e => setDays(Number(e.target.value))}
+            className="text-xs rounded-md border border-gray-200 bg-white px-1.5 py-1 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            {HIDE_FOR.map(h => <option key={h.days} value={h.days}>{h.label}</option>)}
+          </select>
+        </label>
+        <div className="flex gap-2">
+          <button disabled={busy} onClick={onCancel}
+            className="text-xs font-medium px-2.5 py-1 rounded-lg border border-gray-200 bg-white text-gray-600 hover:bg-gray-50">Cancel</button>
+          <button disabled={busy} onClick={() => onSave(note.trim(), days)}
+            className="text-xs font-medium px-2.5 py-1 rounded-lg bg-gray-800 text-white hover:bg-gray-900 disabled:opacity-50">
+            {busy ? 'Saving…' : 'Remove'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// One hidden row: who, why it was on the list, the admin's note (editable), restore.
+function HiddenRow({ row, showCard, onRestored, onError }) {
+  const [busy, setBusy] = useState(false)
+  const [editing, setEditing] = useState(false)
+  const [note, setNote] = useState(row.note || '')
+  const [savedNote, setSavedNote] = useState(row.note || '')
+  const live = row.status === 'hidden'
+
+  async function restore() {
+    setBusy(true)
+    try {
+      await apiFetch(`/api/admin/action-center/dismissed/${row.id}/restore`, { method: 'POST' })
+      onRestored(row)
+    } catch (e) { onError(e.message) } finally { setBusy(false) }
+  }
+  async function saveNote() {
+    setBusy(true)
+    try {
+      await apiFetch(`/api/admin/action-center/dismissed/${row.id}`, { method: 'PATCH', body: JSON.stringify({ note: note.trim() }) })
+      setSavedNote(note.trim()); setEditing(false)
+    } catch (e) { onError(e.message) } finally { setBusy(false) }
+  }
+
+  return (
+    <li className="px-5 py-3.5 border-b border-gray-100">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-sm font-semibold text-gray-900 truncate">
+            {row.name || '—'}
+            {row.phone && <span className="ml-2 text-xs font-normal text-gray-400">{row.phone}</span>}
+            {!live && (
+              <span className="ml-2 text-[11px] font-medium px-1.5 py-0.5 rounded bg-gray-100 text-gray-500">
+                {row.status === 'restored' ? 'restored' : 'expired'}
+              </span>
+            )}
+          </p>
+          {showCard && <p className="text-[11px] font-medium text-indigo-600 mt-0.5">{row.cardTitle}</p>}
+          {(row.reasons || []).length > 0 && (
+            <div className="flex flex-wrap gap-1 mt-1">
+              {row.reasons.map(r => (
+                <span key={r} className="text-[11px] font-medium px-1.5 py-0.5 rounded ring-1 bg-gray-50 text-gray-600 ring-gray-200">{r}</span>
+              ))}
+            </div>
+          )}
+          {row.title && <p className="text-sm text-gray-700 mt-0.5">{row.title}</p>}
+          {!editing && (
+            <p className={`text-sm mt-1 px-3 py-1.5 rounded border-l-2 whitespace-pre-wrap break-words ${
+              savedNote ? 'bg-gray-50 border-indigo-300 text-gray-800' : 'border-gray-200 text-gray-400 italic'}`}>
+              {savedNote || 'No note'}
+            </p>
+          )}
+          {editing && (
+            <div className="mt-1">
+              <textarea value={note} onChange={e => setNote(e.target.value)} rows={2} maxLength={1000} autoFocus
+                className="w-full text-sm rounded-lg border border-gray-200 px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none" />
+              <div className="flex justify-end gap-2 mt-1">
+                <button disabled={busy} onClick={() => { setEditing(false); setNote(savedNote) }}
+                  className="text-xs font-medium px-2.5 py-1 rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50">Cancel</button>
+                <button disabled={busy} onClick={saveNote}
+                  className="text-xs font-medium px-2.5 py-1 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50">
+                  {busy ? 'Saving…' : 'Save note'}
+                </button>
+              </div>
+            </div>
+          )}
+          <p className="text-[11px] text-gray-400 mt-1">
+            Removed by {row.dismissedBy?.name || 'admin'} · {ago(row.dismissedAt)}
+            {' · '}{row.until ? `${live ? 'comes back' : 'came back'} ${dateOf(row.until)}` : 'until restored'}
+            {row.restoredAt && ` · restored by ${row.restoredBy?.name || 'admin'} ${ago(row.restoredAt)}`}
+          </p>
+        </div>
+        {live && (
+          <div className="flex flex-col items-end gap-1.5 flex-shrink-0">
+            <button disabled={busy} onClick={restore}
+              className="text-xs font-medium px-2.5 py-1 rounded-lg border border-indigo-200 text-indigo-700 hover:bg-indigo-50 disabled:opacity-50">
+              {busy ? 'Saving…' : 'Restore'}
+            </button>
+            {!editing && (
+              <button disabled={busy} onClick={() => setEditing(true)}
+                className="text-xs font-medium text-gray-500 hover:text-gray-800">Edit note</button>
+            )}
+          </div>
+        )}
+      </div>
+    </li>
+  )
+}
+
+// The hidden rows of one card (listKey) or of every card (no listKey).
+function HiddenList({ listKey, showCard, history = false, q = '', onRestored }) {
+  const [rows, setRows] = useState(null)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    let alive = true
+    const params = new URLSearchParams()
+    if (listKey) params.set('listKey', listKey)
+    if (history) params.set('history', '1')
+    if (q.trim()) params.set('q', q.trim())
+    const timer = setTimeout(() => {
+      apiFetch(`/api/admin/action-center/dismissed?${params}`)
+        .then(d => { if (alive) { setRows(d.items || []); setError('') } })
+        .catch(e => { if (alive) setError(e.message) })
+    }, q ? 250 : 0)
+    return () => { alive = false; clearTimeout(timer) }
+  }, [listKey, history, q])
+
+  return (
+    <>
+      {error && <p className="mx-5 mt-3 text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2">{error}</p>}
+      {!rows && !error && (
+        <div className="p-5 space-y-3">
+          {[1, 2, 3].map(i => <div key={i} className="h-14 bg-gray-50 rounded-xl animate-pulse" />)}
+        </div>
+      )}
+      {rows && rows.length === 0 && (
+        <p className="px-5 py-12 text-center text-sm text-gray-400">{q ? `No match for “${q}”.` : 'Nothing removed.'}</p>
+      )}
+      <ul>
+        {(rows || []).map(r => (
+          <HiddenRow key={r.id} row={r} showCard={showCard} onError={setError}
+            onRestored={row => {
+              setRows(list => history
+                ? list.map(x => x.id === row.id ? { ...x, status: 'restored', restoredAt: new Date().toISOString() } : x)
+                : list.filter(x => x.id !== row.id))
+              onRestored?.(row)
+            }} />
+        ))}
+      </ul>
+    </>
+  )
+}
+
+// Every removed row across all cards — opened from the page header.
+function HiddenDrawer({ onClose, onChanged }) {
+  const [q, setQ] = useState('')
+  const [history, setHistory] = useState(false)
+  useEffect(() => {
+    const onKey = e => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+  return (
+    <div className="fixed inset-0 z-40 flex justify-end">
+      <div className="absolute inset-0 bg-black/30" onClick={onClose} />
+      <aside className="relative w-full max-w-xl h-full bg-white shadow-xl flex flex-col">
+        <div className="px-5 py-4 border-b border-gray-100 flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h3 className="font-semibold text-gray-900">Removed items</h3>
+            <p className="text-xs text-gray-400 mt-0.5">Rows an admin removed from the Action Center, with their notes. Restore puts one back.</p>
+          </div>
+          <button onClick={onClose} aria-label="Close" className="text-gray-400 hover:text-gray-700 text-xl leading-none px-1">×</button>
+        </div>
+        <div className="px-5 py-3 border-b border-gray-100 flex flex-wrap items-center gap-3">
+          <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search name, phone, note, admin…"
+            className="flex-1 min-w-0 text-sm rounded-lg border border-gray-200 px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+          <label className="text-xs text-gray-500 flex items-center gap-1.5 whitespace-nowrap">
+            <input type="checkbox" checked={history} onChange={e => setHistory(e.target.checked)} />
+            Include restored / expired
+          </label>
+        </div>
+        <div className="flex-1 overflow-y-auto">
+          <HiddenList showCard history={history} q={q} onRestored={onChanged} />
+        </div>
+      </aside>
+    </div>
+  )
+}
+
 // ── Drill-down drawer ────────────────────────────────────────────────────────
 
-function ItemRow({ item, busy, onAction, onOpenLink, scenarioByKey }) {
+function ItemRow({ item, busy, onAction, onDismiss, onOpenLink, scenarioByKey }) {
   const chips = (item.tags || []).map(t => scenarioByKey[t]).filter(Boolean)
   // "Mark reviewed" opens a short note box first — what was done about it.
   const [noting, setNoting] = useState(false)
   const [note, setNote] = useState('')
+  const [dismissing, setDismissing] = useState(false)
   return (
     <li className="px-5 py-3.5 border-b border-gray-100">
       <div className="flex items-start justify-between gap-3">
@@ -138,10 +349,17 @@ function ItemRow({ item, busy, onAction, onOpenLink, scenarioByKey }) {
           )}
         </div>
         <div className="flex flex-col items-end gap-1.5 flex-shrink-0">
-          {item.link && (
-            <button onClick={() => onOpenLink(item.link)}
-              className="text-xs font-medium text-indigo-600 hover:text-indigo-800">Open →</button>
-          )}
+          <div className="flex items-center gap-2.5">
+            {item.link && (
+              <button onClick={() => onOpenLink(item.link)}
+                className="text-xs font-medium text-indigo-600 hover:text-indigo-800">Open →</button>
+            )}
+            <button disabled={busy} onClick={() => { setDismissing(true); setNoting(false) }}
+              title="Remove from this list" aria-label="Remove from this list"
+              className="w-6 h-6 flex items-center justify-center rounded-full text-gray-400 hover:text-red-600 hover:bg-red-50 disabled:opacity-50 text-base leading-none">
+              ×
+            </button>
+          </div>
           {(item.actions || []).includes('mark-scheduled') && (
             <button disabled={busy} onClick={() => onAction(item, 'mark-scheduled')}
               className="text-xs font-medium px-2.5 py-1 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50">
@@ -149,7 +367,7 @@ function ItemRow({ item, busy, onAction, onOpenLink, scenarioByKey }) {
             </button>
           )}
           {(item.actions || []).includes('mark-reviewed') && !noting && (
-            <button disabled={busy} onClick={() => setNoting(true)}
+            <button disabled={busy} onClick={() => { setNoting(true); setDismissing(false) }}
               className="text-xs font-medium px-2.5 py-1 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50">
               Mark reviewed
             </button>
@@ -177,6 +395,10 @@ function ItemRow({ item, busy, onAction, onOpenLink, scenarioByKey }) {
           </div>
         </div>
       )}
+      {dismissing && (
+        <DismissBox busy={busy} onCancel={() => setDismissing(false)}
+          onSave={(dNote, days) => onDismiss(item, dNote, days)} />
+      )}
     </li>
   )
 }
@@ -188,6 +410,8 @@ function Drawer({ listKey, initialScenario, onClose, onChanged }) {
   const [q, setQ] = useState('')
   const [busyId, setBusyId] = useState(null)
   const [scenario, setScenario] = useState(initialScenario || '')
+  const [tab, setTab] = useState('open')   // 'open' | 'hidden'
+  const [reloadTick, setReloadTick] = useState(0)
 
   useEffect(() => {
     let alive = true
@@ -195,7 +419,26 @@ function Drawer({ listKey, initialScenario, onClose, onChanged }) {
       .then(d => { if (alive) setData(d) })
       .catch(e => { if (alive) setError(e.message) })
     return () => { alive = false }
-  }, [listKey])
+  }, [listKey, reloadTick])
+
+  async function dismiss(item, note, days) {
+    setBusyId(item.id)
+    setError('')
+    try {
+      await apiFetch('/api/admin/action-center/dismiss', {
+        method: 'POST', body: JSON.stringify({ listKey, itemId: item.id, note, days }),
+      })
+      setData(d => ({ ...d, total: d.total - 1, dismissed: (d.dismissed || 0) + 1, items: d.items.filter(i => i.id !== item.id) }))
+      onChanged(false)
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  // A restored row comes back only if the problem is still there — ask the server.
+  const onRestored = () => { setReloadTick(n => n + 1); onChanged(false) }
 
   useEffect(() => {
     const onKey = e => { if (e.key === 'Escape') onClose() }
@@ -246,6 +489,25 @@ function Drawer({ listKey, initialScenario, onClose, onChanged }) {
             className="text-gray-400 hover:text-gray-700 text-xl leading-none px-1">×</button>
         </div>
 
+        {data && (
+          <div className="px-5 pt-2 border-b border-gray-100 flex gap-4 text-sm">
+            {[{ key: 'open', label: `Open · ${data.total}` }, { key: 'hidden', label: `Removed · ${data.dismissed || 0}` }].map(tb => (
+              <button key={tb.key} onClick={() => setTab(tb.key)}
+                className={`pb-2 -mb-px border-b-2 font-medium ${tab === tb.key
+                  ? 'border-indigo-600 text-indigo-700' : 'border-transparent text-gray-500 hover:text-gray-800'}`}>
+                {tb.label}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {tab === 'hidden' && (
+          <div className="flex-1 overflow-y-auto">
+            <HiddenList key={reloadTick} listKey={listKey} onRestored={onRestored} />
+          </div>
+        )}
+
+        {tab === 'open' && <>
         {data && data.total > 0 && (
           <div className="px-5 py-3 border-b border-gray-100 flex items-center gap-3">
             <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search name, phone, class…"
@@ -291,10 +553,11 @@ function Drawer({ listKey, initialScenario, onClose, onChanged }) {
           <ul>
             {items.map(item => (
               <ItemRow key={item.id} item={item} busy={busyId === item.id} scenarioByKey={scenarioByKey}
-                onAction={act} onOpenLink={to => navigate(to)} />
+                onAction={act} onDismiss={dismiss} onOpenLink={to => navigate(to)} />
             ))}
           </ul>
         </div>
+        </>}
       </aside>
     </div>
   )
@@ -328,6 +591,8 @@ export default function ActionCenterPage() {
   }, [load])
 
   const closeDrawer = useCallback(() => setOpen(null), [])
+  const [showHidden, setShowHidden] = useState(false)
+  const closeHidden = useCallback(() => setShowHidden(false), [])
   const t = data?.today
   const attentionTotal = (data?.queue || []).reduce((s, c) => s + c.count, 0)
 
@@ -344,6 +609,12 @@ export default function ActionCenterPage() {
         </div>
         <div className="flex items-center gap-3">
           {data && <span className="text-xs text-gray-400">Updated {timeOf(data.generatedAt)}</span>}
+          {data && (
+            <button onClick={() => setShowHidden(true)}
+              className="text-sm font-medium px-3 py-1.5 rounded-lg bg-white shadow-sm text-gray-700 hover:bg-gray-50">
+              Removed items{data.dismissedTotal ? ` · ${data.dismissedTotal}` : ''}
+            </button>
+          )}
           <button onClick={refresh} disabled={loading}
             className="text-sm font-medium px-3 py-1.5 rounded-lg bg-white shadow-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50">
             {loading ? 'Refreshing…' : 'Refresh'}
@@ -451,7 +722,8 @@ export default function ActionCenterPage() {
       )}
 
       {open && <Drawer key={`${open.key}|${open.scenario}`} listKey={open.key} initialScenario={open.scenario}
-        onClose={closeDrawer} onChanged={() => load(true)} />}
+        onClose={closeDrawer} onChanged={(fresh = true) => load(fresh)} />}
+      {showHidden && <HiddenDrawer onClose={closeHidden} onChanged={() => load()} />}
     </div>
   )
 }
