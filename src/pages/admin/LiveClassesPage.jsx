@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { apiFetch } from '../../api'
+import { apiFetch, saveWithClashCheck } from '../../api'
 import AttendanceModal from '../../components/AttendanceModal'
 import SubmissionsModal from '../../components/SubmissionsModal'
 import SchedulerBoard from '../../components/SchedulerBoard'
@@ -51,6 +51,18 @@ const STATUS_STYLE = {
 const STUDENT_APP = import.meta.env.VITE_STUDENT_APP_URL || 'http://localhost:5173'
 const trackUrl = (roomKey, trackKey) => `${STUDENT_APP}/live/${roomKey}/${trackKey}`
 
+// FOCAS Hall: announcements, inductions, introductions. Its tracks are separate
+// sessions (any host, any times), so they are booked from their own form, not
+// the slot board. Session types come from the server's topology.
+const isHall = (room) => room?.kind === 'hall'
+const sessionTypeLabel = (types, key) => (types || []).find(t => t.key === key)?.label || ''
+
+// Local "YYYY-MM-DD" / "HH:MM" for date/time inputs, and back to a Date.
+const pad2 = (n) => String(n).padStart(2, '0')
+const toDateInput = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`
+const toTimeInput = (d) => `${pad2(d.getHours())}:${pad2(d.getMinutes())}`
+const fromInputs = (date, time) => (date && time ? new Date(`${date}T${time}`) : null)
+
 export default function LiveClassesPage() {
   const [classes, setClasses] = useState(null)
   const [hosts, setHosts]     = useState([])
@@ -68,11 +80,18 @@ export default function LiveClassesPage() {
   const [edit, setEdit]       = useState(null)        // { cls, hostUserId, subjectId, chapterId, unitId, saving, error }
   const [pastOpen, setPastOpen] = useState(false)     // history section folded by default
   const [listRoom, setListRoom] = useState('all')     // room filter over the whole list
+  const [sessionTypes, setSessionTypes] = useState([]) // FOCAS Hall session types, from topology
+  const [hallForm, setHallForm] = useState(null)      // "Schedule Hall session" modal state
 
-  // "Both rooms" leads because it is the default — the selected option should be
-  // the first thing read, then the two ways to narrow it.
+  // The slot board is for classrooms only; FOCAS Hall gets its own form.
+  const classRooms = useMemo(() => (rooms || []).filter(r => !isHall(r)), [rooms])
+  const hallRooms  = useMemo(() => (rooms || []).filter(isHall), [rooms])
+  const hallKeys   = useMemo(() => new Set(hallRooms.map(r => r.key)), [hallRooms])
+
+  // "All rooms" leads because it is the default — the selected option should be
+  // the first thing read, then the ways to narrow it.
   const roomChoices = useMemo(
-    () => [{ key: 'all', label: 'Both rooms' }, ...(rooms || []).map(r => ({ key: r.key, label: r.label }))],
+    () => [{ key: 'all', label: 'All rooms' }, ...(rooms || []).map(r => ({ key: r.key, label: r.label }))],
     [rooms],
   )
 
@@ -154,6 +173,7 @@ export default function LiveClassesPage() {
     try {
       const d = await apiFetch('/api/live-classes/manage/topology')
       setRooms(d.rooms || [])
+      setSessionTypes(d.sessionTypes || [])
     } catch {
       setRooms([])
     }
@@ -208,10 +228,10 @@ export default function LiveClassesPage() {
     if (!allot || allot.saving) return
     setAllot(a => ({ ...a, saving: true }))
     try {
-      await apiFetch(`/api/live-classes/manage/${allot.cls._id}/students`, {
+      await saveWithClashCheck((extra) => apiFetch(`/api/live-classes/manage/${allot.cls._id}/students`, {
         method: 'PUT',
-        body: JSON.stringify({ studentIds: allot.students.map(s => s.id) }),
-      })
+        body: JSON.stringify({ studentIds: allot.students.map(s => s.id), ...extra }),
+      }))
       setAllot(null)
       await load()
     } catch (err) {
@@ -221,30 +241,55 @@ export default function LiveClassesPage() {
   }
 
   // Edit a scheduled class before it starts: who teaches it and what it teaches.
+  // A FOCAS Hall session edits its type, recording and times instead (it has no
+  // chapter, and no slot board to move it on).
   const openEdit = (cls) => {
+    const hall = hallKeys.has(cls.room?.key)
+    const start = new Date(cls.scheduledStart), end = new Date(cls.scheduledEnd)
     setEdit({
       cls,
+      hall,
       hostUserId: cls.host?.userId ? String(cls.host.userId) : '',
       subjectId:  cls.subject?.subjectId ? String(cls.subject.subjectId) : '',
       chapterId:  cls.chapter?.chapterId ? String(cls.chapter.chapterId) : '',
       unitId:     cls.unit?.unitId ? String(cls.unit.unitId) : '',
+      sessionType: cls.sessionType && cls.sessionType !== 'class' ? cls.sessionType : '',
+      record: cls.recordingWanted === true,
+      date: toDateInput(start), startTime: toTimeInput(start), endTime: toTimeInput(end),
       saving: false, error: '',
     })
   }
 
   const saveEdit = async () => {
     if (!edit || edit.saving) return
+    let body
+    if (edit.hall) {
+      const start = fromInputs(edit.date, edit.startTime)
+      const end   = fromInputs(edit.date, edit.endTime)
+      if (!edit.sessionType) return setEdit(e => ({ ...e, error: 'Pick a session type' }))
+      if (!start || !end || end <= start) return setEdit(e => ({ ...e, error: 'End time must be after the start time' }))
+      body = {
+        hostUserId: edit.hostUserId || undefined,
+        sessionType: edit.sessionType, record: edit.record,
+        // Only sent when moved, so an untouched session that has drifted into
+        // the start grace window isn't refused as "in the past".
+        ...(start.getTime() !== new Date(edit.cls.scheduledStart).getTime() ? { scheduledStart: start.toISOString() } : {}),
+        ...(end.getTime() !== new Date(edit.cls.scheduledEnd).getTime() ? { scheduledEnd: end.toISOString() } : {}),
+      }
+    } else {
+      body = {
+        // JSON drops undefined — an empty host means "leave the host alone",
+        // while the curriculum ids always travel together as one pick.
+        hostUserId: edit.hostUserId || undefined,
+        subjectId: edit.subjectId, chapterId: edit.chapterId, unitId: edit.unitId,
+      }
+    }
     setEdit(e => ({ ...e, saving: true, error: '' }))
     try {
-      await apiFetch(`/api/live-classes/manage/${edit.cls._id}`, {
+      await saveWithClashCheck((extra) => apiFetch(`/api/live-classes/manage/${edit.cls._id}`, {
         method: 'PATCH',
-        body: JSON.stringify({
-          // JSON drops undefined — an empty host means "leave the host alone",
-          // while the curriculum ids always travel together as one pick.
-          hostUserId: edit.hostUserId || undefined,
-          subjectId: edit.subjectId, chapterId: edit.chapterId, unitId: edit.unitId,
-        }),
-      })
+        body: JSON.stringify({ ...body, ...extra }),
+      }))
       setEdit(null)
       await load()
     } catch (err) {
@@ -290,7 +335,7 @@ export default function LiveClassesPage() {
 
       {/* Occupancy — what each fixed track is doing right now */}
       {!!rooms.length && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-6">
+        <div className="grid grid-cols-1 sm:grid-cols-2 2xl:grid-cols-4 gap-3 mb-6">
           {rooms.map(room => (
             <div key={room.key} className="bg-white rounded-2xl shadow-sm p-4">
               <p className="text-xs font-bold text-gray-500 uppercase mb-2.5">{room.label}</p>
@@ -323,7 +368,7 @@ export default function LiveClassesPage() {
       <CameraRuleSettings />
 
       {/* Scheduler and the class list live in tabs, so neither buries the other. */}
-      <div className="flex gap-1 mb-4">
+      <div className="flex flex-wrap gap-1 mb-4">
         {[
           ['board', `📅 Scheduler${stagedCount ? ` · ${stagedCount} staged` : ''}`],
           ['list', `📋 All classes${classes?.length ? ` (${classes.length})` : ''}`],
@@ -336,6 +381,12 @@ export default function LiveClassesPage() {
             {label}
           </button>
         ))}
+        {!!hallRooms.length && (
+          <button onClick={() => setHallForm(newHallForm(hallRooms))}
+            className="ml-auto px-4 py-2 rounded-xl text-sm font-semibold bg-violet-600 text-white hover:bg-violet-700">
+            📣 Schedule Hall session
+          </button>
+        )}
       </div>
 
       {/* The board is tall — keep a switcher within reach at the bottom too, so
@@ -357,7 +408,7 @@ export default function LiveClassesPage() {
           any drops the admin staged but hasn't saved yet. */}
       <div className={tab === 'board' ? '' : 'hidden'}>
         <SchedulerBoard
-          rooms={rooms}
+          rooms={classRooms}
           hosts={hosts}
           classes={classes || []}
           onChanged={() => Promise.all([load(), loadTopology()])}
@@ -452,7 +503,17 @@ export default function LiveClassesPage() {
                 return (
                 <tr key={c._id}>
                   <td className="px-4 py-3">
-                    <p className="font-medium text-gray-900">{c.title}</p>
+                    <p className="font-medium text-gray-900">
+                      {c.title}
+                      {c.sessionType && c.sessionType !== 'class' && (
+                        <span className="ml-2 align-middle text-[10px] font-bold px-2 py-0.5 rounded-full bg-violet-100 text-violet-700">
+                          {sessionTypeLabel(sessionTypes, c.sessionType) || c.sessionType}
+                        </span>
+                      )}
+                      {c.sessionType && c.sessionType !== 'class' && c.recordingWanted && (
+                        <span className="ml-1 align-middle text-[10px] font-semibold text-gray-400" title="This session will be recorded">⏺ rec</span>
+                      )}
+                    </p>
                     {/* Same one-line format the scheduler cells use:
                         Mentor - Subject - Chapter - Unit, wrapping when long. */}
                     {(c.host?.name || c.chapter?.name) && (
@@ -563,7 +624,7 @@ export default function LiveClassesPage() {
           <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4"
             onClick={() => !edit.saving && setEdit(null)}>
             <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg p-5" onClick={e => e.stopPropagation()}>
-              <h2 className="text-base font-bold text-gray-900 mb-0.5">Edit class</h2>
+              <h2 className="text-base font-bold text-gray-900 mb-0.5">{edit.hall ? 'Edit Hall session' : 'Edit class'}</h2>
               <p className="text-xs text-gray-400 mb-4 truncate">
                 {edit.cls.title} · {fmtWhen(edit.cls.scheduledStart)}
               </p>
@@ -581,6 +642,9 @@ export default function LiveClassesPage() {
                   </select>
                 </div>
 
+                {edit.hall ? (
+                  <HallSessionFields form={edit} set={set} sessionTypes={sessionTypes} />
+                ) : (
                 <div>
                   <p className="text-[11px] font-bold text-gray-500 uppercase mb-1">What this class teaches</p>
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
@@ -612,6 +676,7 @@ export default function LiveClassesPage() {
                     <p className="text-[10px] text-amber-600 mt-1">Pick a chapter — a subject alone doesn't track progress.</p>
                   )}
                 </div>
+                )}
               </div>
 
               <div className="flex justify-end gap-2 mt-5">
@@ -628,6 +693,17 @@ export default function LiveClassesPage() {
           </div>
         )
       })()}
+
+      {hallForm && (
+        <HallSessionModal
+          form={hallForm}
+          setForm={setHallForm}
+          hallRooms={hallRooms}
+          hosts={hosts}
+          sessionTypes={sessionTypes}
+          onSaved={async () => { setHallForm(null); setTab('list'); await Promise.all([load(), loadTopology()]) }}
+        />
+      )}
 
       {/* Edit-allotment modal */}
       {allot && (
@@ -733,6 +809,163 @@ function DraggableFab({ label, onActivate }) {
         ${pos ? '' : 'bottom-5 left-1/2 -translate-x-1/2'}`}>
       {label}
     </button>
+  )
+}
+
+// ───────────────────── FOCAS Hall ─────────────────────
+// A fresh "Schedule Hall session" form: the next half hour, for an hour, on the
+// Hall's first track, recording off.
+function newHallForm(hallRooms) {
+  const start = new Date(Date.now() + 30 * 60000)
+  start.setMinutes(start.getMinutes() < 30 ? 30 : 60, 0, 0)
+  const end = new Date(start.getTime() + 60 * 60000)
+  const room = hallRooms[0]
+  return {
+    title: '', description: '', sessionType: '', record: false, hostUserId: '',
+    trackSel: room?.tracks?.[0] ? `${room.key}|${room.tracks[0].key}` : '',
+    date: toDateInput(start), startTime: toTimeInput(start), endTime: toTimeInput(end),
+    students: [], saving: false, error: '',
+  }
+}
+
+// Type, times and recording — shared by the create modal and the edit modal.
+function HallSessionFields({ form, set, sessionTypes }) {
+  const inp = 'w-full px-3 py-2 text-sm border border-gray-200 rounded-lg bg-white outline-none focus:ring-2 focus:ring-violet-400'
+  return (
+    <>
+      <div>
+        <p className="text-[11px] font-bold text-gray-500 uppercase mb-1">Session type</p>
+        <select value={form.sessionType} onChange={e => set({ sessionType: e.target.value })} className={inp}>
+          <option value="">Pick a type…</option>
+          {sessionTypes.map(t => <option key={t.key} value={t.key}>{t.label}</option>)}
+        </select>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+        <div>
+          <p className="text-[11px] font-bold text-gray-500 uppercase mb-1">Date</p>
+          <input type="date" value={form.date} onChange={e => set({ date: e.target.value })} className={inp} />
+        </div>
+        <div>
+          <p className="text-[11px] font-bold text-gray-500 uppercase mb-1">Starts</p>
+          <input type="time" value={form.startTime} onChange={e => set({ startTime: e.target.value })} className={inp} />
+        </div>
+        <div>
+          <p className="text-[11px] font-bold text-gray-500 uppercase mb-1">Ends</p>
+          <input type="time" value={form.endTime} onChange={e => set({ endTime: e.target.value })} className={inp} />
+        </div>
+      </div>
+      <label className="flex items-start gap-2 text-sm text-gray-700 cursor-pointer">
+        <input type="checkbox" checked={form.record} onChange={e => set({ record: e.target.checked })}
+          className="w-4 h-4 mt-0.5 accent-violet-600" />
+        <span>
+          <span className="font-semibold">Record this session</span>
+          <span className="block text-[11px] text-gray-400">
+            Saved to Drive like class recordings. Off by default — recorders are shared with classes, so leave it off unless the recording will be needed.
+          </span>
+        </span>
+      </label>
+    </>
+  )
+}
+
+function HallSessionModal({ form, setForm, hallRooms, hosts, sessionTypes, onSaved }) {
+  const set = (patch) => setForm(f => f && ({ ...f, ...patch }))
+  const inp = 'w-full px-3 py-2 text-sm border border-gray-200 rounded-lg bg-white outline-none focus:ring-2 focus:ring-violet-400'
+
+  const save = async () => {
+    if (form.saving) return
+    const start = fromInputs(form.date, form.startTime)
+    const end   = fromInputs(form.date, form.endTime)
+    const [roomKey, trackKey] = (form.trackSel || '').split('|')
+    const err = !form.title.trim() ? 'Give the session a title'
+      : !form.sessionType ? 'Pick a session type'
+      : !roomKey || !trackKey ? 'Pick a Hall track'
+      : !start || !end || end <= start ? 'End time must be after the start time'
+      : ''
+    if (err) return set({ error: err })
+    set({ saving: true, error: '' })
+    try {
+      await saveWithClashCheck((extra) => apiFetch('/api/live-classes/manage', {
+        method: 'POST',
+        body: JSON.stringify({
+          ...extra,
+          title: form.title.trim(),
+          description: form.description.trim(),
+          roomKey, trackKey,
+          scheduledStart: start.toISOString(),
+          scheduledEnd: end.toISOString(),
+          hostUserId: form.hostUserId || undefined,
+          sessionType: form.sessionType,
+          record: form.record,
+          studentIds: form.students.map(s => s.id),
+        }),
+      }))
+      await onSaved()
+    } catch (e) {
+      set({ saving: false, error: e.message || 'Could not schedule the session' })
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4"
+      onClick={() => !form.saving && setForm(null)}>
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg p-5 max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+        <h2 className="text-base font-bold text-gray-900 mb-0.5">📣 Schedule a FOCAS Hall session</h2>
+        <p className="text-xs text-gray-400 mb-4">Announcements, inductions and introductions. Each Hall track is its own session — two hosts can run the two tracks at the same time.</p>
+
+        {form.error && <p className="text-xs text-red-500 mb-3">{form.error}</p>}
+
+        <div className="space-y-3">
+          <div>
+            <p className="text-[11px] font-bold text-gray-500 uppercase mb-1">Title</p>
+            <input value={form.title} onChange={e => set({ title: e.target.value })} maxLength={120}
+              placeholder="e.g. Welcome to CA Inter — Jan 2027 batch" className={inp} />
+          </div>
+          <HallSessionFields form={form} set={set} sessionTypes={sessionTypes} />
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <div>
+              <p className="text-[11px] font-bold text-gray-500 uppercase mb-1">Track</p>
+              <select value={form.trackSel} onChange={e => set({ trackSel: e.target.value })} className={inp}>
+                {hallRooms.flatMap(r => r.tracks.map(t => (
+                  <option key={`${r.key}|${t.key}`} value={`${r.key}|${t.key}`}>{r.label} · {t.label}</option>
+                )))}
+              </select>
+            </div>
+            <div>
+              <p className="text-[11px] font-bold text-gray-500 uppercase mb-1">Host</p>
+              <select value={form.hostUserId} onChange={e => set({ hostUserId: e.target.value })} className={inp}>
+                <option value="">Me</option>
+                {hosts.map(h => <option key={h.id} value={String(h.id)}>{h.name} ({h.role})</option>)}
+              </select>
+            </div>
+          </div>
+          <div>
+            <p className="text-[11px] font-bold text-gray-500 uppercase mb-1">Description (optional)</p>
+            <textarea value={form.description} onChange={e => set({ description: e.target.value })} rows={2} className={inp} />
+          </div>
+          <div>
+            <p className="text-[11px] font-bold text-gray-500 uppercase mb-1">Who can join</p>
+            <StudentPicker selected={form.students} onChange={(students) => set({ students })} />
+            <p className="text-[11px] text-gray-400 mt-1">
+              {form.students.length
+                ? `Only these ${form.students.length} student${form.students.length > 1 ? 's' : ''} can see and join.`
+                : 'Empty list — every logged-in student can see and join.'}
+            </p>
+          </div>
+        </div>
+
+        <div className="flex justify-end gap-2 mt-5">
+          <button onClick={() => setForm(null)} disabled={form.saving}
+            className="px-4 py-2 rounded-xl border border-gray-200 text-gray-500 text-sm font-semibold hover:bg-gray-50">
+            Cancel
+          </button>
+          <button onClick={save} disabled={form.saving}
+            className="px-4 py-2 rounded-xl bg-violet-600 text-white text-sm font-semibold hover:bg-violet-700 disabled:bg-gray-300">
+            {form.saving ? 'Scheduling…' : 'Schedule session'}
+          </button>
+        </div>
+      </div>
+    </div>
   )
 }
 

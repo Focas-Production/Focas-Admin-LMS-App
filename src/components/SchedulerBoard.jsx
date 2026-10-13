@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
-import { apiFetch } from '../api'
+import { apiFetch, saveWithClashCheck } from '../api'
 import {
   FIELD_DEFS, fieldDef, opsFor, newCondition, conditionComplete, conditionReady,
   evalCondition, chapterConditionKey, studiesSubject,
@@ -214,7 +214,7 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
     return out
   }, [days])
 
-  // All four tracks in display order, with their parent room label.
+  // Every classroom track in display order, with its parent room label.
   const trackCols = useMemo(() =>
     (rooms || []).flatMap(r => r.tracks.map(t => ({
       roomKey: r.key, roomLabel: r.label,
@@ -695,9 +695,9 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
       try {
         if (existing) {
           const merged = [...new Set([...(existing.allowedStudents || []).map(String), ...ids])]
-          await apiFetch(`/api/live-classes/manage/${existing._id}/students`, {
-            method: 'PUT', body: JSON.stringify({ studentIds: merged }),
-          })
+          await saveWithClashCheck((extra) => apiFetch(`/api/live-classes/manage/${existing._id}/students`, {
+            method: 'PUT', body: JSON.stringify({ studentIds: merged, ...extra }),
+          }))
         } else {
           const meta = newMeta[cellId] || {}
           const locked = roomLockedHost(cellId, cell)
@@ -706,7 +706,7 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
           if (!meta.subjectId || !meta.chapterId) throw new Error('Pick a subject and chapter')
           const start = new Date(day.getFullYear(), day.getMonth(), day.getDate(), slot.startHour)
           const end   = new Date(day.getFullYear(), day.getMonth(), day.getDate(), slot.endHour)
-          await apiFetch('/api/live-classes/manage', {
+          await saveWithClashCheck((extra) => apiFetch('/api/live-classes/manage', {
             method: 'POST',
             body: JSON.stringify({
               title: (meta.title || '').trim() || `${col.roomLabel} · ${col.trackLabel}`,
@@ -715,8 +715,9 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
               hostUserId, studentIds: ids,
               subjectId: meta.subjectId, chapterId: meta.chapterId,
               unitId: meta.unitId || undefined,
+              ...extra,
             }),
-          })
+          }))
         }
         setStaged(prev => { const next = { ...prev }; delete next[cellId]; return next })
       } catch (err) {
@@ -904,7 +905,7 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
           {(rooms || []).length > 1 && (
             <div className="flex justify-end">
               <div className="inline-flex bg-white border border-gray-200 rounded-xl p-0.5 shadow-sm">
-                {[...(rooms || []).map(r => ({ key: r.key, label: r.label })), { key: 'all', label: 'Both rooms' }].map(opt => {
+                {[...(rooms || []).map(r => ({ key: r.key, label: r.label })), { key: 'all', label: (rooms || []).length > 2 ? 'All rooms' : 'Both rooms' }].map(opt => {
                   // Staged students waiting inside this room, so a hidden room
                   // with pending drops is never forgotten.
                   const stagedHere = opt.key === 'all' ? 0 : Object.values(staged)
@@ -946,7 +947,7 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
 
                 {!folded && (
                   <div className="border-t border-gray-100 px-3 pb-3 pt-1 overflow-x-auto">
-                    <table className="w-full border-separate table-fixed" style={{ borderSpacing: 6, minWidth: visibleCols.length > 2 ? 760 : 460 }}>
+                    <table className="w-full border-separate table-fixed" style={{ borderSpacing: 6, minWidth: Math.max(460, 120 + visibleCols.length * 170) }}>
                       <thead>
                         <tr>
                           <th className="text-left text-[10px] font-bold text-gray-400 uppercase px-2 w-32">Slot</th>
