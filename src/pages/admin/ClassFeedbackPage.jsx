@@ -1,7 +1,10 @@
-// Class Feedback — what students said about their live classes: a 1–5 star
-// rating and a comment, both optional, given after the class ends. Shows the
-// overall rating, one row per mentor (average, star split, response rate), and
-// the answers themselves with filters. Numbers come from
+// Class Feedback — what students said about their live classes: 1–5 stars for
+// each of three areas (Conceptual clarity, Attention, Doubt solving) and a
+// comment, both optional, given after the class ends. Shows the overall rating
+// and each area's, one row per mentor (overall, each area, the area they lag
+// in, star split, response rate), and the answers themselves with filters.
+// An answer's overall rating is the average of its three areas; answers from
+// before the areas existed have an overall rating only. Numbers come from
 // /api/admin/class-feedback/summary, the answers from /api/admin/class-feedback.
 // Classes are placed by their scheduled start date (IST).
 import { useState, useEffect } from 'react'
@@ -11,6 +14,12 @@ const selectCls = 'text-sm px-3 py-2 bg-white border border-gray-200 rounded-lg 
 const PAGE_SIZE = 25
 // Below this many ratings an average says little — the table marks it.
 const FEW_RATINGS = 5
+// Fallback until the summary (which carries the server's list) has loaded.
+const AREAS = [
+  { key: 'clarity', label: 'Conceptual clarity' },
+  { key: 'attention', label: 'Attention' },
+  { key: 'doubts', label: 'Doubt solving' },
+]
 
 // Today in IST as a UTC-fields Date, so date maths never drift a day.
 const istToday = () => new Date(Date.now() + 330 * 60 * 1000)
@@ -129,6 +138,69 @@ function StarHistogram({ stars, total }) {
   )
 }
 
+// One area's average: the number, coloured like the overall rating.
+function AreaAvg({ a, lagging }) {
+  if (!a || a.average == null) return <span className="text-gray-300">—</span>
+  return (
+    <span className={`font-semibold tabular-nums ${avgTone(a.average)} ${lagging ? 'underline decoration-rose-400 decoration-2 underline-offset-4' : ''}`}
+      title={`${a.ratings} rating${a.ratings !== 1 ? 's' : ''}`}>
+      {fmtAvg(a.average)}
+    </span>
+  )
+}
+
+// Overall card: one bar per area, out of 5, the lagging area marked.
+function AreaBars({ areas, lagging, list }) {
+  return (
+    <div className="space-y-2">
+      {list.map((c) => {
+        const a = areas?.[c.key]
+        const v = a?.average
+        return (
+          <div key={c.key} className="flex items-center gap-3 text-sm">
+            <span className="w-36 font-medium text-gray-700">
+              {c.label}
+              {lagging?.key === c.key && <span className="ml-1 text-[10px] font-semibold px-1 py-0.5 rounded bg-rose-50 text-rose-700 ring-1 ring-rose-200">LAGGING</span>}
+            </span>
+            <div className="flex-1 h-3 rounded-full bg-gray-100 overflow-hidden">
+              {v != null && <div className={`h-full rounded-full ${v >= 4.2 ? 'bg-emerald-500' : v >= 3.5 ? 'bg-amber-400' : 'bg-rose-500'}`} style={{ width: `${(v / 5) * 100}%` }} />}
+            </div>
+            <span className="w-24 text-right tabular-nums">
+              <b className={avgTone(v)}>{fmtAvg(v)}</b> <span className="text-gray-400">· {a?.ratings || 0}</span>
+            </span>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+// An answer's stars: the overall, then each area as a small chip (low ones red).
+function AnswerStars({ r, list }) {
+  if (r.skipped) return <span className="text-xs text-gray-400 italic">Skipped</span>
+  if (!r.rating) return <span className="text-xs text-gray-400">No stars</span>
+  return (
+    <div>
+      <div className="flex items-center gap-1.5">
+        <Stars value={r.rating} />
+        <span className={`text-xs font-semibold tabular-nums ${avgTone(r.rating)}`}>{fmtAvg(r.rating)}</span>
+      </div>
+      {r.scores ? (
+        <div className="flex flex-wrap gap-1 mt-1">
+          {list.map((c) => {
+            const v = r.scores[c.key]
+            return (
+              <span key={c.key} className={`text-[11px] px-1.5 py-0.5 rounded-md border tabular-nums ${STAR_PILL[v] || 'bg-gray-50 text-gray-500 border-gray-200'}`}>
+                {c.label.split(' ')[0]} {v ?? '—'}★
+              </span>
+            )
+          })}
+        </div>
+      ) : <p className="text-[11px] text-gray-400 mt-0.5">Overall only (older answer)</p>}
+    </div>
+  )
+}
+
 function saveCsv(lines, name) {
   // BOM so Excel reads the comments' non-English text correctly.
   const blob = new Blob(['﻿' + lines.join('\n')], { type: 'text/csv;charset=utf-8' })
@@ -203,6 +275,7 @@ export default function ClassFeedbackPage() {
   // Answer list filters.
   const [mentorId, setMentorId] = useState('')
   const [stars, setStars] = useState('')
+  const [area, setArea] = useState('')
   const [commentsOnly, setCommentsOnly] = useState(false)
   const [showSkipped, setShowSkipped] = useState(false)
   const [needsReview, setNeedsReview] = useState(false)
@@ -215,6 +288,7 @@ export default function ClassFeedbackPage() {
     from, to,
     ...(mentorId ? { mentorId } : {}),
     ...(stars ? { stars } : {}),
+    ...(area ? { area } : {}),
     ...(commentsOnly ? { comments: '1' } : {}),
     ...(showSkipped ? { skipped: '1' } : {}),
     ...(needsReview ? { review: 'pending' } : {}),
@@ -244,16 +318,20 @@ export default function ClassFeedbackPage() {
   const listLoading = list.key !== listKey
   const o = summary.data?.overall
   const mentors = summary.data?.mentors || []
+  const areaList = summary.data?.criteria || AREAS
+  // Quality rank: only mentors with enough ratings for the average to mean something.
+  let nextRank = 0
+  const rankOf = new Map(mentors.filter((m) => m.ratings >= FEW_RATINGS).map((m) => [m.mentorId, ++nextRank]))
   const pages = Math.max(1, Math.ceil(list.total / PAGE_SIZE))
 
   async function exportCsv() {
     setExporting(true)
     try {
       const d = await apiFetch(`/api/admin/class-feedback?${listQuery}&export=1&limit=5000`)
-      const lines = [csv(['Class date', 'Mentor', 'Class', 'Subject', 'Chapter', 'Student', 'Phone', 'Stars', 'Comment', 'Skipped', 'Given on', 'Edited on', 'From', 'Review', 'Reviewed by', 'Review note'])]
+      const lines = [csv(['Class date', 'Mentor', 'Class', 'Subject', 'Chapter', 'Student', 'Phone', 'Overall', ...areaList.map((c) => c.label), 'Comment', 'Skipped', 'Given on', 'Edited on', 'From', 'Review', 'Reviewed by', 'Review note'])]
       for (const r of d.rows || []) {
         lines.push(csv([fmtWhen(r.classStartedAt), r.mentorName, r.classTitle, r.subjectName, r.chapterName,
-          r.studentName, r.studentPhone, r.rating ?? '', r.comment, r.skipped ? 'yes' : '',
+          r.studentName, r.studentPhone, r.rating ?? '', ...areaList.map((c) => r.scores?.[c.key] ?? ''), r.comment, r.skipped ? 'yes' : '',
           fmtWhen(r.createdAt), r.editedAt ? fmtWhen(r.editedAt) : '', r.source,
           r.review ? `Reviewed ${fmtWhen(r.review.doneAt)}` : r.reviewReason ? 'Needs review' : '',
           r.review?.by || '', r.review?.note || '']))
@@ -286,7 +364,7 @@ export default function ClassFeedbackPage() {
         <div>
           <h1 className="text-xl font-bold text-gray-900">Class Feedback</h1>
           <p className="text-xs text-gray-400 mt-0.5">
-            Students&apos; star ratings and comments on live classes — overall and mentor by mentor.
+            Students&apos; ratings on Conceptual clarity, Attention and Doubt solving, and their comments — overall and mentor by mentor.
           </p>
         </div>
         <div className="w-full flex flex-wrap items-center gap-1.5 order-last">
@@ -338,14 +416,22 @@ export default function ClassFeedbackPage() {
             <p className="text-sm font-semibold text-gray-700 mb-2">How students rated, overall</p>
             <StarHistogram stars={o.stars} total={o.ratings} />
           </div>
+          <div className="flex-1 md:border-l md:border-gray-100 md:pl-5">
+            <p className="text-sm font-semibold text-gray-700 mb-2">By area</p>
+            <AreaBars areas={o.areas} lagging={o.lagging} list={areaList} />
+            {o.lagging && <p className="text-xs text-rose-600 mt-2">Weakest area overall: <b>{o.lagging.label}</b></p>}
+          </div>
         </div>
       )}
 
       {/* Mentor-wise */}
       <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
         <div className="px-4 py-3 border-b border-gray-100">
-          <h2 className="text-sm font-bold text-gray-900">Mentor-wise rating</h2>
-          <p className="text-xs text-gray-400">Click a mentor to see their students&apos; answers below.</p>
+          <h2 className="text-sm font-bold text-gray-900">Mentor quality rating</h2>
+          <p className="text-xs text-gray-400">
+            Ranked by overall rating ({FEW_RATINGS}+ ratings to get a rank). &quot;Lagging in&quot; names the area holding a mentor back.
+            Click a mentor to see their students&apos; answers below.
+          </p>
         </div>
         {loading ? (
           <div className="p-10 text-center text-sm text-gray-400">Loading…</div>
@@ -356,8 +442,11 @@ export default function ClassFeedbackPage() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="text-xs text-gray-500 border-b border-gray-100">
+                  <th className={`${th} text-right`}>#</th>
                   <th className={`${th} text-left`}>Mentor</th>
-                  <th className={`${th} text-left`}>Rating</th>
+                  <th className={`${th} text-left`}>Overall</th>
+                  {areaList.map((c) => <th key={c.key} className={`${th} text-right`}>{c.label}</th>)}
+                  <th className={`${th} text-left`}>Lagging in</th>
                   <th className={`${th} text-right`}>Ratings</th>
                   <th className={`${th} text-left`}>Star split</th>
                   <th className={`${th} text-right`}>Comments</th>
@@ -372,6 +461,7 @@ export default function ClassFeedbackPage() {
                     <tr key={m.mentorId}
                       onClick={() => setFilter(setMentorId)(selected ? '' : m.mentorId)}
                       className={`border-t border-gray-100 cursor-pointer ${selected ? 'bg-indigo-50' : 'hover:bg-indigo-50/40'}`}>
+                      <td className="px-4 py-2.5 text-right tabular-nums text-gray-500">{rankOf.get(m.mentorId) || '—'}</td>
                       <td className="px-4 py-2.5">
                         <p className="font-semibold text-gray-900">{m.name}</p>
                         <p className="text-xs text-gray-400">{m.phoneNumber}</p>
@@ -384,6 +474,16 @@ export default function ClassFeedbackPage() {
                         {m.ratings > 0 && m.ratings < FEW_RATINGS && (
                           <p className="text-xs text-amber-600">Few ratings — read with care</p>
                         )}
+                      </td>
+                      {areaList.map((c) => (
+                        <td key={c.key} className="px-4 py-2.5 text-right">
+                          <AreaAvg a={m.areas?.[c.key]} lagging={m.lagging?.key === c.key} />
+                        </td>
+                      ))}
+                      <td className="px-4 py-2.5 whitespace-nowrap">
+                        {m.lagging
+                          ? <span className="text-xs font-semibold px-1.5 py-0.5 rounded-md bg-rose-50 text-rose-700 ring-1 ring-rose-200">{m.lagging.label} · {fmtAvg(m.lagging.average)}</span>
+                          : <span className="text-xs text-gray-300">—</span>}
                       </td>
                       <td className="px-4 py-2.5 text-right tabular-nums">{m.ratings}</td>
                       <td className="px-4 py-2.5"><StarSplit stars={m.stars} total={m.ratings} /></td>
@@ -416,8 +516,12 @@ export default function ClassFeedbackPage() {
           </select>
           <select value={stars} onChange={(e) => setFilter(setStars)(e.target.value)} className={selectCls}>
             <option value="">Any rating</option>
-            <option value="low">Low (1–2★)</option>
-            {[5, 4, 3, 2, 1].map((s) => <option key={s} value={String(s)}>{s}★ only</option>)}
+            <option value="low">Low overall (under 2.5★)</option>
+            {[5, 4, 3, 2, 1].map((s) => <option key={s} value={String(s)}>{s}★ overall</option>)}
+          </select>
+          <select value={area} onChange={(e) => setFilter(setArea)(e.target.value)} className={selectCls}>
+            <option value="">Any area</option>
+            {areaList.map((c) => <option key={c.key} value={c.key}>Low in {c.label} (1–2★)</option>)}
           </select>
           <label className="text-xs text-gray-600 flex items-center gap-1.5">
             <input type="checkbox" checked={commentsOnly} onChange={(e) => setFilter(setCommentsOnly)(e.target.checked)} />
@@ -471,9 +575,7 @@ export default function ClassFeedbackPage() {
                       <p className="text-xs text-gray-400">{r.studentPhone}</p>
                     </td>
                     <td className="px-4 py-2.5 whitespace-nowrap">
-                      {r.skipped ? <span className="text-xs text-gray-400 italic">Skipped</span>
-                        : r.rating ? <Stars value={r.rating} />
-                        : <span className="text-xs text-gray-400">No stars</span>}
+                      <AnswerStars r={r} list={areaList} />
                     </td>
                     <td className="px-4 py-2.5">
                       {r.comment
@@ -504,8 +606,9 @@ export default function ClassFeedbackPage() {
       </div>
 
       <div className="text-xs text-gray-500 space-y-0.5">
-        <p><b>Who can answer</b> — only students who joined the class, once it has ended, for {summary.data?.windowDays || 7} days after. Stars and comment are both optional; a student can change their answer inside that time.</p>
-        <p><b>Rating</b> — the average of the star ratings given. Comment-only answers and skips are not counted in it. &quot;Few ratings&quot; marks fewer than {FEW_RATINGS}.</p>
+        <p><b>Who can answer</b> — only students who joined the class, once it has ended, for {summary.data?.windowDays || 7} days after. Stars and comment are both optional, but stars are given for all three areas together; a student can change their answer inside that time.</p>
+        <p><b>Overall</b> — each answer&apos;s overall is the average of its three areas; the mentor&apos;s overall is the average of those (older single-star answers count here too). Comment-only answers and skips are not counted. &quot;Few ratings&quot; marks fewer than {FEW_RATINGS}.</p>
+        <p><b>Area averages</b> — {areaList.map((c) => c.label).join(', ')}, each averaged over the answers that scored it. <b>Lagging in</b> — the mentor&apos;s lowest area, shown when it is under 3.5★ or 0.5★+ below their best area (3+ scores needed).</p>
         <p><b>Response rate</b> — answers (stars and/or comment) ÷ students who joined that mentor&apos;s ended classes. Skips are not answers.</p>
         <p className="text-gray-400">Classes are placed by their scheduled date. Students are told only the FOCAS team sees their feedback — please don&apos;t share names with mentors.</p>
       </div>
