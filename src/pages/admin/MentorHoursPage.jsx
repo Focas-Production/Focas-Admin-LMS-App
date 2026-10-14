@@ -102,50 +102,86 @@ function saveCsv(lines, name) {
 }
 const csv = (cells) => cells.map((v) => `"${String(v ?? '').replace(/"/g, '""')}"`).join(',')
 
+// CSV columns as [header, value, advancedOnly]. Advanced-only columns (the
+// mentor's real in-class time and everything worked out from it) go into the
+// file only while "Advanced view" is ticked, the same as on screen.
+const pickCols = (cols, advanced) => cols.filter((c) => advanced || !c[2])
+
 // One line per mentor per month, plus the mentor's total.
-function downloadSummary(groups, from, to) {
-  const lines = [csv(['Mentor', 'Phone', 'Month', 'Slots booked', 'Slots attended', 'Tracks booked', 'Tracks attended',
-    'Working hours (booked slots)', 'Working hours (attended slots)', 'Actual hours',
-    'Short time (hours)', 'Short slots', 'Extra time (hours)', 'Extra slots', 'Net short (hours, minus = net extra)',
-    'Actual % of booked', 'Actual % of attended'])]
+const SUMMARY_COLS = [
+  ['Mentor', (g) => g.name],
+  ['Phone', (g) => g.phoneNumber],
+  ['Month', (g, r) => (r.month ? monthLabel(r.month) : 'TOTAL')],
+  ['Slots booked', (g, r) => r.slotCount],
+  ['Slots attended', (g, r) => r.attendedCount],
+  ['Tracks booked', (g, r) => r.trackCount],
+  ['Tracks attended', (g, r) => r.trackAttendedCount],
+  ['Working hours (booked slots)', (g, r) => decHours(r.workingMs)],
+  ['Working hours (attended slots)', (g, r) => decHours(r.attendedWorkingMs)],
+  ['Actual hours', (g, r) => decHours(r.actualMs), true],
+  ['Short time (hours)', (g, r) => decHours(r.shortMs), true],
+  ['Short slots', (g, r) => r.shortSlotCount, true],
+  ['Extra time (hours)', (g, r) => decHours(r.extraMs), true],
+  ['Extra slots', (g, r) => r.extraSlotCount, true],
+  ['Net short (hours, minus = net extra)', (g, r) => decSigned(netMs(r)), true],
+  ['Actual % of booked', (g, r) => pct(r.actualMs, r.workingMs), true],
+  ['Actual % of attended', (g, r) => pct(r.actualMs, r.attendedWorkingMs), true],
+]
+
+function downloadSummary(groups, from, to, advanced) {
+  const cols = pickCols(SUMMARY_COLS, advanced)
+  const lines = [csv(cols.map((c) => c[0]))]
   for (const g of groups) {
     for (const r of [...g.months, { ...g, month: null }]) {
-      lines.push(csv([g.name, g.phoneNumber, r.month ? monthLabel(r.month) : 'TOTAL',
-        r.slotCount, r.attendedCount, r.trackCount, r.trackAttendedCount,
-        decHours(r.workingMs), decHours(r.attendedWorkingMs), decHours(r.actualMs),
-        decHours(r.shortMs), r.shortSlotCount, decHours(r.extraMs), r.extraSlotCount, decSigned(netMs(r)),
-        pct(r.actualMs, r.workingMs), pct(r.actualMs, r.attendedWorkingMs)]))
+      lines.push(csv(cols.map((c) => c[1](g, r))))
     }
   }
-  saveCsv(lines, `mentor-hours-summary-${from}-to-${to}.csv`)
+  saveCsv(lines, `mentor-hours-summary${advanced ? '-advanced' : ''}-${from}-to-${to}.csv`)
 }
 
-// One line per track. Slot hours sit on the slot's first track only, so a
+// One line per track. Slot values sit on the slot's first track only, so a
 // column sum in Excel still counts a two-track slot once.
-function downloadDetail(groups, from, to) {
-  const lines = [csv(['Mentor', 'Phone', 'Month', 'Date', 'Slot time', 'Slot working hours', 'Slot actual hours',
-    'Slot short time (hours)', 'Slot extra time (hours)', 'Slot actual %',
-    'Room · Track', 'Subject', 'Chapter', 'Unit', 'Class started', 'Class ended', 'Mentor time in this track (hours)'])]
+const slotOnly = (fn) => (g, r, s, t, first) => (first ? fn(s) : '')
+const DETAIL_COLS = [
+  ['Mentor', (g) => g.name],
+  ['Phone', (g) => g.phoneNumber],
+  ['Month', (g, r) => monthLabel(r.month)],
+  ['Date', (g, r, s) => fmtDay(s.start)],
+  ['Slot time', (g, r, s) => `${fmtTime(s.start)} – ${fmtTime(s.end)}`],
+  ['Mentor joined slot', slotOnly((s) => (s.attended ? 'Yes' : 'No'))],
+  ['Slot working hours', slotOnly((s) => decHours(s.workingMs))],
+  ['Slot actual hours', slotOnly((s) => decHours(s.actualMs)), true],
+  ['Slot short time (hours)', slotOnly((s) => decHours(s.shortMs)), true],
+  ['Slot extra time (hours)', slotOnly((s) => decHours(s.extraMs)), true],
+  ['Slot actual %', slotOnly((s) => pct(s.actualMs, s.workingMs)), true],
+  ['Room · Track', (g, r, s, t) => trackName(t)],
+  ['Subject', (g, r, s, t) => t.subject],
+  ['Chapter', (g, r, s, t) => t.chapter],
+  ['Unit', (g, r, s, t) => t.unit],
+  ['Class started', (g, r, s, t) => (t.startedAt ? fmtTime(t.startedAt) : 'Not started')],
+  ['Class ended', (g, r, s, t) => (t.endedAt ? fmtTime(t.endedAt) : '')],
+  ['Mentor time in this track (hours)', (g, r, s, t) => decHours(t.actualMs), true],
+]
+
+function downloadDetail(groups, from, to, advanced) {
+  const cols = pickCols(DETAIL_COLS, advanced)
+  const lines = [csv(cols.map((c) => c[0]))]
   for (const g of groups) {
     for (const r of g.months) {
       for (const s of r.slots) {
         s.tracks.forEach((t, i) => {
-          const first = i === 0
-          lines.push(csv([g.name, g.phoneNumber, monthLabel(r.month), fmtDay(s.start), `${fmtTime(s.start)} – ${fmtTime(s.end)}`,
-            first ? decHours(s.workingMs) : '', first ? decHours(s.actualMs) : '',
-            first ? decHours(s.shortMs) : '', first ? decHours(s.extraMs) : '', first ? pct(s.actualMs, s.workingMs) : '',
-            trackName(t), t.subject, t.chapter, t.unit,
-            t.startedAt ? fmtTime(t.startedAt) : 'Not started', t.endedAt ? fmtTime(t.endedAt) : '', decHours(t.actualMs)]))
+          lines.push(csv(cols.map((c) => c[1](g, r, s, t, i === 0))))
         })
       }
     }
   }
-  saveCsv(lines, `mentor-hours-detail-${from}-to-${to}.csv`)
+  saveCsv(lines, `mentor-hours-detail${advanced ? '-advanced' : ''}-${from}-to-${to}.csv`)
 }
 
 // A month's slots: slot time and hours on the left, every track of the slot
-// listed on the right with its own subject, chapter, times and room time.
-function SlotTable({ slots }) {
+// listed on the right with its own subject, chapter and times. The mentor's
+// real in-class time (and short/extra/%) shows only in Advanced view.
+function SlotTable({ slots, advanced }) {
   return (
     <table className="w-full text-xs mt-1">
       <thead>
@@ -153,13 +189,17 @@ function SlotTable({ slots }) {
           <th className="py-1.5 pr-3 font-medium">Date · Slot</th>
           <th className="py-1.5 pr-3 font-medium">Track · Subject · Chapter</th>
           <th className="py-1.5 pr-3 font-medium whitespace-nowrap">Class ran</th>
-          <th className="py-1.5 pr-3 font-medium text-right whitespace-nowrap">In this track</th>
+          {advanced && <th className="py-1.5 pr-3 font-medium text-right whitespace-nowrap">In this track</th>}
           <th className={`py-1.5 pr-3 font-medium text-right whitespace-nowrap ${WORK}`}>Working</th>
-          <th className={`py-1.5 pr-3 font-medium text-right whitespace-nowrap ${ACTUAL}`}>Actual</th>
-          <th className="py-1.5 pr-3 font-medium text-right whitespace-nowrap">
-            <span className={SHORT}>Short</span> / <span className={EXTRA}>Extra</span>
-          </th>
-          <th className="py-1.5 font-medium text-right">Actual %</th>
+          {advanced && (
+            <>
+              <th className={`py-1.5 pr-3 font-medium text-right whitespace-nowrap ${ACTUAL}`}>Actual</th>
+              <th className="py-1.5 pr-3 font-medium text-right whitespace-nowrap">
+                <span className={SHORT}>Short</span> / <span className={EXTRA}>Extra</span>
+              </th>
+              <th className="py-1.5 font-medium text-right">Actual %</th>
+            </>
+          )}
         </tr>
       </thead>
       <tbody>
@@ -175,6 +215,11 @@ function SlotTable({ slots }) {
                       {s.tracks.length} tracks · counted once
                     </span>
                   )}
+                  {!s.attended && (
+                    <span className="block w-fit mt-1 px-1.5 py-0.5 rounded bg-rose-50 text-rose-600 text-[10px] font-medium">
+                      Missed
+                    </span>
+                  )}
                 </td>
               )}
               <td className="py-2 pr-3">
@@ -185,21 +230,27 @@ function SlotTable({ slots }) {
               <td className="py-2 pr-3 whitespace-nowrap text-gray-600">
                 {t.startedAt ? `${fmtTime(t.startedAt)} → ${t.status === 'live' ? 'live now' : fmtTime(t.endedAt)}` : <span className="text-rose-500">Not started</span>}
               </td>
-              <td className={`py-2 pr-3 text-right tabular-nums whitespace-nowrap ${t.attended ? 'text-gray-600' : 'text-rose-500'}`}>
-                {t.attended ? fmtHours(t.actualMs) : 'Not joined'}
-              </td>
+              {advanced && (
+                <td className={`py-2 pr-3 text-right tabular-nums whitespace-nowrap ${t.attended ? 'text-gray-600' : 'text-rose-500'}`}>
+                  {t.attended ? fmtHours(t.actualMs) : 'Not joined'}
+                </td>
+              )}
               {i === 0 && (
                 <>
                   <td rowSpan={s.tracks.length} className={`py-2 pr-3 text-right tabular-nums font-medium ${WORK}`}>{fmtHours(s.workingMs)}</td>
-                  <td rowSpan={s.tracks.length} className={`py-2 pr-3 text-right tabular-nums font-medium ${s.attended ? ACTUAL : SHORT}`}>
-                    {s.attended ? fmtHours(s.actualMs) : 'Absent'}
-                  </td>
-                  <td rowSpan={s.tracks.length} className="py-2 pr-3 text-right tabular-nums font-medium whitespace-nowrap">
-                    {s.shortMs > 0 ? <span className={SHORT}>−{fmtHours(s.shortMs)} short</span>
-                      : s.extraMs > 0 ? <span className={EXTRA}>+{fmtHours(s.extraMs)} extra</span>
-                      : <span className="text-gray-400">Exact</span>}
-                  </td>
-                  <td rowSpan={s.tracks.length} className="py-2"><PctCell actualMs={s.actualMs} workingMs={s.workingMs} /></td>
+                  {advanced && (
+                    <>
+                      <td rowSpan={s.tracks.length} className={`py-2 pr-3 text-right tabular-nums font-medium ${s.attended ? ACTUAL : SHORT}`}>
+                        {s.attended ? fmtHours(s.actualMs) : 'Absent'}
+                      </td>
+                      <td rowSpan={s.tracks.length} className="py-2 pr-3 text-right tabular-nums font-medium whitespace-nowrap">
+                        {s.shortMs > 0 ? <span className={SHORT}>−{fmtHours(s.shortMs)} short</span>
+                          : s.extraMs > 0 ? <span className={EXTRA}>+{fmtHours(s.extraMs)} extra</span>
+                          : <span className="text-gray-400">Exact</span>}
+                      </td>
+                      <td rowSpan={s.tracks.length} className="py-2"><PctCell actualMs={s.actualMs} workingMs={s.workingMs} /></td>
+                    </>
+                  )}
                 </>
               )}
             </tr>
@@ -226,8 +277,12 @@ function OfCell({ done, of, bold }) {
   )
 }
 
+// Main table width: Mentor/Month + 2 count columns + 2 working-hour columns,
+// plus Actual, Short, Extra, Net and two Actual % columns in Advanced view.
+const tableCols = (advanced) => (advanced ? 11 : 5)
+
 // The number columns, shared by a mentor's total row and each month row.
-function NumberCells({ r, bold }) {
+function NumberCells({ r, bold, advanced }) {
   const td = `px-3 py-2 text-right tabular-nums whitespace-nowrap ${bold ? 'font-semibold' : ''}`
   return (
     <>
@@ -235,6 +290,15 @@ function NumberCells({ r, bold }) {
       <OfCell done={r.trackAttendedCount} of={r.trackCount} bold={bold} />
       <td className={`${td} ${WORK}`}>{fmtHours(r.workingMs)}</td>
       <td className={`${td} ${WORK} bg-sky-50/50`}>{fmtHours(r.attendedWorkingMs)}</td>
+      {advanced && <AdvancedCells r={r} bold={bold} td={td} />}
+    </>
+  )
+}
+
+// Actual hours and everything worked out from them — Advanced view only.
+function AdvancedCells({ r, bold, td }) {
+  return (
+    <>
       <td className={`${td} ${ACTUAL}`}>{fmtHours(r.actualMs)}</td>
       <td className={`${td} ${SHORT} bg-rose-50/40`}>
         {fmtHours(r.shortMs)}
@@ -256,6 +320,9 @@ export default function MentorHoursPage() {
   const [to, setTo] = useState(() => daysAgo(0))
   const [query, setQuery] = useState('')
   const [open, setOpen] = useState(() => new Set())   // `${mentorId}|${month}` rows showing their slots
+  // Off on every visit on purpose (not remembered): the actual / short /
+  // extra / net / % figures show — and go into the CSVs — only when ticked.
+  const [advanced, setAdvanced] = useState(false)
   // `key` is the range the held data belongs to — anything else is loading.
   const [state, setState] = useState({ key: null, rows: [], error: '' })
   const rangeKey = `${from}|${to}`
@@ -303,13 +370,13 @@ export default function MentorHoursPage() {
     { label: 'Tracks attended / booked', value: `${total.trackAttendedCount} / ${total.trackCount}`, sub: `${total.trackCount - total.trackAttendedCount} missed`, cls: 'text-gray-900' },
     { label: 'Working hours · booked slots', value: fmtHours(total.workingMs), sub: `All ${total.slotCount} booked slots`, cls: WORK, ring: 'border-l-4 border-sky-400' },
     { label: 'Working hours · attended slots', value: fmtHours(total.attendedWorkingMs), sub: `The ${total.attendedCount} slots attended`, cls: WORK, ring: 'border-l-4 border-sky-200' },
-    { label: 'Actual hours', value: fmtHours(total.actualMs), sub: 'Mentor in class', cls: ACTUAL, ring: 'border-l-4 border-emerald-400' },
-    { label: 'Short time', value: fmtHours(total.shortMs), sub: `In ${total.shortSlotCount} slots under booked time`, cls: SHORT, ring: 'border-l-4 border-rose-300' },
-    { label: 'Extra time', value: fmtHours(total.extraMs), sub: `In ${total.extraSlotCount} slots over booked time`, cls: EXTRA, ring: 'border-l-4 border-violet-300' },
-    { label: 'Net short', value: <NetValue r={total} />, sub: 'Short time − Extra time', cls: '', ring: 'border-l-4 border-gray-300' },
-    { label: 'Actual % of booked', value: `${pct(total.actualMs, total.workingMs)}%`, sub: 'Actual ÷ booked hours', cls: pctTone(pct(total.actualMs, total.workingMs)).text },
-    { label: 'Actual % of attended', value: `${pct(total.actualMs, total.attendedWorkingMs)}%`, sub: 'Actual ÷ attended-slot hours', cls: pctTone(pct(total.actualMs, total.attendedWorkingMs)).text },
-  ]
+    { adv: true, label: 'Actual hours', value: fmtHours(total.actualMs), sub: 'Mentor in class', cls: ACTUAL, ring: 'border-l-4 border-emerald-400' },
+    { adv: true, label: 'Short time', value: fmtHours(total.shortMs), sub: `In ${total.shortSlotCount} slots under booked time`, cls: SHORT, ring: 'border-l-4 border-rose-300' },
+    { adv: true, label: 'Extra time', value: fmtHours(total.extraMs), sub: `In ${total.extraSlotCount} slots over booked time`, cls: EXTRA, ring: 'border-l-4 border-violet-300' },
+    { adv: true, label: 'Net short', value: <NetValue r={total} />, sub: 'Short time − Extra time', cls: '', ring: 'border-l-4 border-gray-300' },
+    { adv: true, label: 'Actual % of booked', value: `${pct(total.actualMs, total.workingMs)}%`, sub: 'Actual ÷ booked hours', cls: pctTone(pct(total.actualMs, total.workingMs)).text },
+    { adv: true, label: 'Actual % of attended', value: `${pct(total.actualMs, total.attendedWorkingMs)}%`, sub: 'Actual ÷ attended-slot hours', cls: pctTone(pct(total.actualMs, total.attendedWorkingMs)).text },
+  ].filter((t) => advanced || !t.adv)
 
   const th = 'px-4 py-2.5 font-semibold text-right whitespace-nowrap'
 
@@ -319,7 +386,9 @@ export default function MentorHoursPage() {
         <div>
           <h1 className="text-xl font-bold text-gray-900">Mentor Hours</h1>
           <p className="text-xs text-gray-400 mt-0.5">
-            Slots booked vs attended, and working hours vs actual hours in class — month by month.
+            {advanced
+              ? 'Slots booked vs attended, and working hours vs actual hours in class — month by month.'
+              : 'Slots booked vs attended, and working hours — month by month.'}
           </p>
         </div>
         <div className="w-full flex flex-wrap items-center gap-1.5 order-last">
@@ -345,18 +414,26 @@ export default function MentorHoursPage() {
           <input type="date" value={to} min={from} max={daysAgo(0)} onChange={(e) => e.target.value && setTo(e.target.value)} className={selectCls} />
           <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search mentor or phone…"
             className={`${selectCls} w-52`} />
-          <button type="button" onClick={() => downloadSummary(groups, from, to)} disabled={loading || !groups.length}
+          <button type="button" onClick={() => downloadSummary(groups, from, to, advanced)} disabled={loading || !groups.length}
             className="text-sm px-3 py-2 rounded-lg bg-indigo-600 text-white font-medium hover:bg-indigo-700 disabled:opacity-40">
             Summary CSV
           </button>
-          <button type="button" onClick={() => downloadDetail(groups, from, to)} disabled={loading || !groups.length}
+          <button type="button" onClick={() => downloadDetail(groups, from, to, advanced)} disabled={loading || !groups.length}
             className="text-sm px-3 py-2 rounded-lg border border-indigo-200 text-indigo-700 font-medium hover:bg-indigo-50 disabled:opacity-40">
             Detailed CSV
           </button>
+          <label className={`inline-flex items-center gap-2 text-sm font-medium px-3 py-2 rounded-lg border cursor-pointer select-none transition-colors ${advanced
+            ? 'bg-indigo-50 border-indigo-300 text-indigo-700'
+            : 'bg-white border-gray-200 text-gray-600 hover:border-indigo-300'}`}
+            title="Show actual hours, short time, extra time, net short and actual % — on screen and in the CSV downloads">
+            <input type="checkbox" checked={advanced} onChange={(e) => setAdvanced(e.target.checked)}
+              className="w-4 h-4 accent-indigo-600 cursor-pointer" />
+            Advanced view
+          </label>
         </div>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+      <div className={`grid grid-cols-2 gap-3 ${advanced ? 'md:grid-cols-5' : 'md:grid-cols-4'}`}>
         {tiles.map((t) => (
           <div key={t.label} className={`bg-white rounded-2xl shadow-sm px-4 py-3 ${t.ring || ''}`}>
             <p className="text-xs text-gray-400">{t.label}</p>
@@ -386,18 +463,26 @@ export default function MentorHoursPage() {
                   <th rowSpan={2} className={`${th} align-bottom border-b border-gray-100`}>Slots<br /><span className="font-normal text-gray-400">attended / booked</span></th>
                   <th rowSpan={2} className={`${th} align-bottom border-b border-gray-100`}>Tracks<br /><span className="font-normal text-gray-400">attended / booked</span></th>
                   <th colSpan={2} className={`${th} text-center ${WORK} border-b border-sky-100`}>Working hours</th>
-                  <th rowSpan={2} className={`${th} align-bottom border-b border-gray-100 ${ACTUAL}`}>Actual hours</th>
-                  <th colSpan={3} className={`${th} text-center border-b border-gray-100`}>Short vs extra time</th>
-                  <th colSpan={2} className={`${th} text-center border-b border-gray-100`}>Actual %</th>
+                  {advanced && (
+                    <>
+                      <th rowSpan={2} className={`${th} align-bottom border-b border-gray-100 ${ACTUAL}`}>Actual hours</th>
+                      <th colSpan={3} className={`${th} text-center border-b border-gray-100`}>Short vs extra time</th>
+                      <th colSpan={2} className={`${th} text-center border-b border-gray-100`}>Actual %</th>
+                    </>
+                  )}
                 </tr>
                 <tr className="text-[11px] text-gray-500 border-b border-gray-100">
                   <th className={`${th} ${WORK}`}>Booked slots</th>
                   <th className={`${th} ${WORK} bg-sky-50/50`}>Attended slots</th>
-                  <th className={`${th} ${SHORT} bg-rose-50/40`}>Short time</th>
-                  <th className={`${th} ${EXTRA} bg-violet-50/40`}>Extra time</th>
-                  <th className={th}>Net short</th>
-                  <th className={th}>of booked</th>
-                  <th className={th}>of attended</th>
+                  {advanced && (
+                    <>
+                      <th className={`${th} ${SHORT} bg-rose-50/40`}>Short time</th>
+                      <th className={`${th} ${EXTRA} bg-violet-50/40`}>Extra time</th>
+                      <th className={th}>Net short</th>
+                      <th className={th}>of booked</th>
+                      <th className={th}>of attended</th>
+                    </>
+                  )}
                 </tr>
               </thead>
               <tbody>
@@ -408,7 +493,7 @@ export default function MentorHoursPage() {
                         <p className="font-semibold text-gray-900">{g.name}</p>
                         <p className="text-[11px] text-gray-400">{g.phoneNumber}{g.role === 'admin' ? ' · admin' : ''} · total for selected dates</p>
                       </td>
-                      <NumberCells r={g} bold />
+                      <NumberCells r={g} bold advanced={advanced} />
                     </tr>
                     {g.months.map((r) => {
                       const key = `${g.mentorId}|${r.month}`
@@ -420,12 +505,12 @@ export default function MentorHoursPage() {
                               <span className="inline-block w-4 text-gray-400">{isOpen ? '▾' : '▸'}</span>
                               {monthLabel(r.month)}
                             </td>
-                            <NumberCells r={r} />
+                            <NumberCells r={r} advanced={advanced} />
                           </tr>
                           {isOpen && (
                             <tr>
-                              <td colSpan={12}className="px-4 pb-3 pl-12 bg-gray-50/60">
-                                <SlotTable slots={r.slots} />
+                              <td colSpan={tableCols(advanced)} className="px-4 pb-3 pl-12 bg-gray-50/60">
+                                <SlotTable slots={r.slots} advanced={advanced} />
                               </td>
                             </tr>
                           )}
@@ -443,9 +528,15 @@ export default function MentorHoursPage() {
       <div className="text-[11px] text-gray-500 space-y-0.5">
         <p><b>Slots</b> — a slot is one block of the mentor&apos;s time. Two tracks run together in the same slot are one slot (and two <b>tracks</b>). Attended = the mentor joined it.</p>
         <p><b className={WORK}>Working hours · booked slots</b> — booked time of every slot. <b className={WORK}>· attended slots</b> — booked time of only the slots the mentor joined. A 3-hour slot on two tracks is 3 hours, not 6.</p>
-        <p><b className={ACTUAL}>Actual hours</b> — the mentor&apos;s own time in class (join → leave), across both tracks, counted once.</p>
-        <p><b className={SHORT}>Short time</b> — added up over the slots where the mentor was in class LESS than the booked time (late start, early leave, missed). <b className={EXTRA}>Extra time</b> — added up over the slots where they were in class MORE (early start, overtime). <b>Net short</b> = Short time − Extra time (= Booked − Actual); shown as &quot;+… extra&quot; when extra time is larger.</p>
-        <p><b>Actual % of booked</b> = Actual ÷ booked-slot hours. <b>Actual % of attended</b> = Actual ÷ attended-slot hours (how long they stayed in the classes they came to). <b>In this track</b> = the mentor&apos;s time in that one track&apos;s room.</p>
+        {advanced ? (
+          <>
+            <p><b className={ACTUAL}>Actual hours</b> — the mentor&apos;s own time in class (join → leave), across both tracks, counted once.</p>
+            <p><b className={SHORT}>Short time</b> — added up over the slots where the mentor was in class LESS than the booked time (late start, early leave, missed). <b className={EXTRA}>Extra time</b> — added up over the slots where they were in class MORE (early start, overtime). <b>Net short</b> = Short time − Extra time (= Booked − Actual); shown as &quot;+… extra&quot; when extra time is larger.</p>
+            <p><b>Actual % of booked</b> = Actual ÷ booked-slot hours. <b>Actual % of attended</b> = Actual ÷ attended-slot hours (how long they stayed in the classes they came to). <b>In this track</b> = the mentor&apos;s time in that one track&apos;s room.</p>
+          </>
+        ) : (
+          <p>Tick <b>Advanced view</b> (top right) to see actual hours, short time, extra time, net short and actual % — on screen and in the CSV downloads.</p>
+        )}
         <p className="text-gray-400">Cancelled and future classes are left out. A slot the mentor never joined counts as missed.</p>
       </div>
     </div>
