@@ -1009,14 +1009,43 @@ function HelpPopover({ label, children }) {
 }
 
 const SCOPE_CHIP = {
-  class:         { tone: 'indigo', hint: 'Class student — only the subjects they are enrolled for are counted' },
-  kit:           { tone: 'gray',   hint: 'No classes booked or bought, so every subject in their plan is counted' },
+  class:         { tone: 'indigo', hint: 'Class student — the top numbers count only the subjects they are enrolled for' },
+  open:          { tone: 'gray',   hint: 'Not a class student (no class booked or bought), so every subject in their plan is counted' },
   'class-unset': { tone: 'amber',  hint: 'Set their level and group from Users → Course to narrow this to their subjects' },
+}
+
+// One "Total" line of the subject table.
+function TotalRow({ label, types, grand, grandPercent, strong }) {
+  return (
+    <tr className={`text-xs text-gray-700 ${strong ? 'bg-gray-50 border-t border-gray-200' : 'bg-white border-t border-gray-100'}`}>
+      <td className={`px-4 py-3 uppercase tracking-wide text-[11px] ${strong ? 'font-bold text-gray-600' : 'font-semibold text-gray-400'}`}>{label}</td>
+      {types.map(t => (
+        <td key={t.key} className="px-4 py-3">
+          <span className="flex items-center gap-2"><span><b>{t.written}</b> / {t.canWrite}</span><ScorePill percent={t.percent} /></span>
+        </td>
+      ))}
+      <td className="px-4 py-3">
+        <span className="flex items-center gap-2"><span><b>{grand.written}</b> / {grand.canWrite}</span><ScorePill percent={grandPercent} /></span>
+      </td>
+    </tr>
+  )
+}
+
+function grandOf(types) {
+  const g = types.reduce((a, t) => ({
+    written: a.written + t.written, canWrite: a.canWrite + t.canWrite, evaluated: a.evaluated + t.evaluated,
+    awaiting: a.awaiting + t.awaiting, awarded: a.awarded + t.awarded, total: a.total + t.total,
+  }), { written: 0, canWrite: 0, evaluated: 0, awaiting: 0, awarded: 0, total: 0 })
+  return { grand: g, grandPercent: g.evaluated ? pctOf(g.awarded, g.total) : null }
 }
 
 // "How many tests could they write, and how many did they?" — per subject and
 // per paper type. Available = the papers in the student's plan (the same list
 // their own Test Series page shows, after any "any N per subject" cap).
+//
+// The top (overview + type cards) always counts ENROLLED subjects only. The
+// subject table can additionally show the rest of the level on demand, with
+// its own totals, so the headline numbers never change under the admin.
 function TestCoverage({ studentId, onOpen }) {
   const { data, error, loading } = useResource(`/api/admin/users/${studentId}/test-coverage`, null)
   const [showSizes, setShowSizes] = useState(false)
@@ -1035,7 +1064,8 @@ function TestCoverage({ studentId, onOpen }) {
   if (error) return <div className="border-b border-gray-100"><Empty title="Couldn't load test coverage" hint={error} /></div>
   if (!data) return null
 
-  if (!data.subjects.length) {
+  const hasAnything = data.subjects.some(s => s.summary.papers > 0 || s.summary.written > 0 || s.summary.opened > 0)
+  if (!hasAnything) {
     return (
       <div className="border-b border-gray-100">
         <Empty title="No test series in this student's plan"
@@ -1044,37 +1074,36 @@ function TestCoverage({ studentId, onOpen }) {
     )
   }
 
-  const scope = data.scope || { mode: 'kit', label: '' }
+  const scope = data.scope || { mode: 'open', label: '' }
   const enrolled = data.subjects.filter(s => s.enrolled !== false)
   const outside = data.subjects.filter(s => s.enrolled === false)
-  const outsideWritten = outside.reduce((n, s) => n + s.summary.written, 0)
-  const subjects = showAll ? data.subjects : enrolled
-  const types = totalsFor(data.types, subjects)
+  const outsideWritten = outside.filter(s => s.summary.written > 0)
+  const outsideWrittenCount = outsideWritten.reduce((n, s) => n + s.summary.written, 0)
 
-  const grand = types.reduce((a, t) => ({
-    written: a.written + t.written, canWrite: a.canWrite + t.canWrite, evaluated: a.evaluated + t.evaluated,
-    awaiting: a.awaiting + t.awaiting, awarded: a.awarded + t.awarded, total: a.total + t.total,
-  }), { written: 0, canWrite: 0, evaluated: 0, awaiting: 0, awarded: 0, total: 0 })
-  const grandPercent = grand.evaluated ? pctOf(grand.awarded, grand.total) : null
+  const types = totalsFor(data.types, enrolled)
+  const { grand, grandPercent } = grandOf(types)
+  const allTypes = totalsFor(data.types, data.subjects)
+  const all = grandOf(allTypes)
 
-  const chip = SCOPE_CHIP[scope.mode] || SCOPE_CHIP.kit
-  const chipText = scope.mode === 'class' ? `Enrolled: ${scope.label}`
-    : scope.mode === 'kit' ? 'Kit student · all subjects' : 'Class student · no group set · all subjects'
+  const chip = SCOPE_CHIP[scope.mode] || SCOPE_CHIP.open
+  const chipText = scope.mode === 'class' ? `Enrolled: ${scope.batch}`
+    : scope.mode === 'open' ? 'Not a class student · all subjects' : 'Class student · no batch set · all subjects'
+  const batchText = scope.batch
+    ? `${scope.picked ? 'Papers' : 'Batch'}: ${scope.batch}`
+    : 'Batch: not set'
+
+  const revealOutside = () => {
+    setShowAll(true)
+    setTimeout(() => document.getElementById('coverage-table')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50)
+  }
 
   return (
     <div className="border-b border-gray-100 p-5 space-y-4">
-      {/* scope + controls */}
+      {/* scope + help */}
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <div className="flex items-center gap-3 flex-wrap">
           <p className="text-sm font-semibold text-gray-900">Tests available vs written</p>
           <Badge tone={chip.tone} title={chip.hint}>{chipText}</Badge>
-          {outside.length > 0 && (
-            <label className="flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer select-none">
-              <input type="checkbox" checked={showAll} onChange={e => setShowAll(e.target.checked)}
-                className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-400" />
-              Show all subjects <span className="text-gray-400">(+{outside.length} not enrolled)</span>
-            </label>
-          )}
         </div>
         <HelpPopover label="ⓘ How to read this">
           <p><b>Available</b> — test papers this student's plan lets them write.</p>
@@ -1082,22 +1111,25 @@ function TestCoverage({ studentId, onOpen }) {
           <p><Dot tone="emerald" /> <b>Checked</b> — a mentor corrected it and gave marks.</p>
           <p><Dot tone="amber" /> <b>Waiting</b> — submitted, not corrected yet.</p>
           <p><b>Score</b> — marks scored ÷ marks possible, over checked papers. A 50-mark paper counts double a 25-mark one.</p>
+          {scope.mode === 'class' && <p><b>Enrolled only</b> — the numbers at the top count only the student's batch. Tick "Show not-enrolled subjects" in the table to see the rest.</p>}
           {data.limited && <p><b>Plan: any N</b> — the student picks which N papers to write in that subject.</p>}
           <p className="text-gray-400">Click any highlighted cell to see those papers in the list below.</p>
         </HelpPopover>
       </div>
 
-      {!showAll && outsideWritten > 0 && (
+      {outsideWrittenCount > 0 && (
         <div className="flex items-start gap-2.5 text-xs text-amber-800 bg-amber-50 border border-amber-100 rounded-xl px-3.5 py-2.5">
           <span className="text-base leading-none">⚠</span>
           <p className="flex-1">
-            <b>{outsideWritten} test{outsideWritten === 1 ? '' : 's'}</b> written in subjects outside their enrolment
-            ({outside.filter(s => s.summary.written > 0).map(s => s.name).join(', ')}) are not counted below.
+            <b>{outsideWrittenCount} test{outsideWrittenCount === 1 ? '' : 's'}</b> written in subjects outside their batch
+            ({outsideWritten.map(s => s.name).join(', ')}) are not counted in these numbers.
           </p>
-          <button type="button" onClick={() => setShowAll(true)}
-            className="font-semibold text-amber-900 bg-white border border-amber-200 rounded-lg px-2.5 py-1 hover:bg-amber-100 whitespace-nowrap">
-            Include them
-          </button>
+          {!showAll && (
+            <button type="button" onClick={revealOutside}
+              className="font-semibold text-amber-900 bg-white border border-amber-200 rounded-lg px-2.5 py-1 hover:bg-amber-100 whitespace-nowrap">
+              Show in table
+            </button>
+          )}
         </div>
       )}
 
@@ -1108,15 +1140,28 @@ function TestCoverage({ studentId, onOpen }) {
       </div>
 
       {/* subject matrix */}
-      <div className="rounded-xl border border-gray-200 overflow-hidden">
+      <div id="coverage-table" className="rounded-xl border border-gray-200 overflow-hidden scroll-mt-4">
         <div className="px-4 py-3 bg-gray-50/80 border-b border-gray-200 flex items-center justify-between gap-3 flex-wrap">
-          <p className="text-sm font-semibold text-gray-900">Subject by subject</p>
+          <div className="flex items-center gap-2.5 flex-wrap min-w-0">
+            <p className="text-sm font-semibold text-gray-900">Subject by subject</p>
+            <Badge tone={scope.batch ? 'indigo' : 'amber'}
+              title={scope.batch ? 'What this student is enrolled for (Users → Course)' : 'No level, group or papers set for this student'}>
+              {batchText}
+            </Badge>
+          </div>
           <div className="flex items-center gap-4 flex-wrap">
-            <div className="hidden sm:flex items-center gap-3 text-[11px] text-gray-500">
+            <div className="hidden lg:flex items-center gap-3 text-[11px] text-gray-500">
               <span className="flex items-center gap-1"><Dot tone="emerald" />Checked</span>
               <span className="flex items-center gap-1"><Dot tone="amber" />Waiting</span>
               <span className="flex items-center gap-1"><Dot tone="gray" />Not written</span>
             </div>
+            {outside.length > 0 && (
+              <label className="flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer select-none">
+                <input type="checkbox" checked={showAll} onChange={e => setShowAll(e.target.checked)}
+                  className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-400" />
+                Show not-enrolled subjects <span className="text-gray-400">(+{outside.length})</span>
+              </label>
+            )}
             <label className="flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer select-none">
               <input type="checkbox" checked={showSizes} onChange={e => setShowSizes(e.target.checked)}
                 className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-400" />
@@ -1134,20 +1179,21 @@ function TestCoverage({ studentId, onOpen }) {
               </tr>
             </thead>
             <tbody>
-              {!subjects.length && (
+              {!enrolled.length && (
                 <tr><td colSpan={types.length + 2} className="px-5 py-8">
-                  <Empty title="No test papers for the subjects this student is enrolled in"
-                    hint='Tick "Show all subjects" to see the other subjects in their plan.' />
+                  <Empty title="No subjects in this student's batch"
+                    hint='Tick "Show not-enrolled subjects" to see the other subjects.' />
                 </td></tr>
               )}
-              {(showAll ? enrolled : subjects).map(s => (
+              {enrolled.map(s => (
                 <SubjectRow key={s.subjectId || s.name} s={s} types={types} showSizes={showSizes} onOpen={onOpen} />
               ))}
               {showAll && outside.length > 0 && (
                 <>
-                  <tr className="bg-gray-50">
+                  <tr className="bg-gray-50 border-y border-gray-200">
                     <td colSpan={types.length + 2} className="px-4 py-2 text-[11px] font-semibold text-gray-500 uppercase tracking-wide">
                       Not enrolled · {outside.length} subject{outside.length === 1 ? '' : 's'}
+                      <span className="normal-case font-normal text-gray-400"> — not counted in the numbers at the top</span>
                     </td>
                   </tr>
                   {outside.map(s => (
@@ -1157,17 +1203,11 @@ function TestCoverage({ studentId, onOpen }) {
               )}
             </tbody>
             <tfoot>
-              <tr className="bg-gray-50 border-t border-gray-200 text-xs text-gray-700">
-                <td className="px-4 py-3 font-bold uppercase tracking-wide text-[11px] text-gray-500">Total</td>
-                {types.map(t => (
-                  <td key={t.key} className="px-4 py-3">
-                    <span className="flex items-center gap-2"><span><b>{t.written}</b> / {t.canWrite}</span><ScorePill percent={t.percent} /></span>
-                  </td>
-                ))}
-                <td className="px-4 py-3">
-                  <span className="flex items-center gap-2"><span><b>{grand.written}</b> / {grand.canWrite}</span><ScorePill percent={grandPercent} /></span>
-                </td>
-              </tr>
+              <TotalRow strong label={scope.mode === 'class' ? 'Enrolled total' : 'Total'}
+                types={types} grand={grand} grandPercent={grandPercent} />
+              {showAll && outside.length > 0 && (
+                <TotalRow label="All subjects total" types={allTypes} grand={all.grand} grandPercent={all.grandPercent} />
+              )}
             </tfoot>
           </table>
         </div>
@@ -1178,6 +1218,7 @@ function TestCoverage({ studentId, onOpen }) {
 
 function SubjectRow({ s, types, showSizes, onOpen, muted }) {
   const done = pctOf(s.summary.written, s.summary.canWrite)
+  const inPlan = s.summary.papers > 0 || s.summary.written > 0 || s.summary.opened > 0
   return (
     <tr className={`align-top border-b border-gray-100 last:border-0 ${muted ? 'bg-gray-50/40' : ''}`}>
       <td className="px-4 py-3.5">
@@ -1189,14 +1230,22 @@ function SubjectRow({ s, types, showSizes, onOpen, muted }) {
           onOpen={() => onOpen({ subjectId: s.subjectId || '', testSeriesType: t.key })} />
       ))}
       <td className="px-4 py-3.5 whitespace-nowrap">
-        <div className="flex items-center gap-2">
-          <span className={s.summary.written ? 'text-gray-900' : 'text-gray-400'}>
-            <b>{s.summary.written}</b><span className="text-xs"> / {s.summary.canWrite}</span>
+        {!inPlan ? (
+          <span className="text-[11px] text-gray-400" title="None of this student's products include test papers for this subject">
+            No test series in plan
           </span>
-          {s.summary.written > 0 && <span className="text-[11px] text-gray-400">{done}%</span>}
-          <ScorePill percent={s.summary.percent} />
-        </div>
-        <StackBar checked={s.summary.evaluated} waiting={s.summary.awaiting} of={s.summary.canWrite} className="h-1.5 mt-1.5 w-28" />
+        ) : (
+          <>
+            <div className="flex items-center gap-2">
+              <span className={s.summary.written ? 'text-gray-900' : 'text-gray-400'}>
+                <b>{s.summary.written}</b><span className="text-xs"> / {s.summary.canWrite}</span>
+              </span>
+              {s.summary.written > 0 && <span className="text-[11px] text-gray-400">{done}%</span>}
+              <ScorePill percent={s.summary.percent} />
+            </div>
+            <StackBar checked={s.summary.evaluated} waiting={s.summary.awaiting} of={s.summary.canWrite} className="h-1.5 mt-1.5 w-28" />
+          </>
+        )}
       </td>
     </tr>
   )
