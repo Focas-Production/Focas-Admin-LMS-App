@@ -7,7 +7,7 @@
 // document), plus /attendance-log and /test-marks, which are paginated and
 // filtered independently because a year of classes is not one payload. The
 // lecture list reuses the existing /progress endpoint.
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { apiFetch } from '../../api'
 import { enrollmentLabel } from '../../lib/ca'
@@ -767,38 +767,443 @@ function FileLinks({ submissionId, files, label, tone, onError }) {
   )
 }
 
-// Per-subject marks, straight off the report. Answers "how is he doing in
-// Costing specifically" without having to filter the log first.
-function SubjectMarks({ bySubject }) {
-  if (!bySubject.length) return null
+const TEST_TYPE_LABEL = { chapter_wise: 'Chapter-wise', segment_wise: 'Segment-wise', full_test: 'Full test' }
+
+// What each paper type is, in one line a new admin can follow.
+const TYPE_INFO = {
+  chapter_wise: { title: 'Chapter-wise tests', blurb: 'One chapter per test',          edge: 'border-t-indigo-500', text: 'text-indigo-700' },
+  segment_wise: { title: 'Segment-wise tests', blurb: 'A group of chapters per test',  edge: 'border-t-violet-500', text: 'text-violet-700' },
+  full_test:    { title: 'Full tests',         blurb: 'The whole subject in one test', edge: 'border-t-sky-500',    text: 'text-sky-700' },
+}
+
+const pctOf = (n, d) => (d > 0 ? Math.min(100, Math.round((n / d) * 100)) : 0)
+const fmtMarks = (n) => (Number.isInteger(n) ? n : Number(n.toFixed(1)))
+
+// Paper sizes that actually exist (a 0-mark paper is a data slip, not a size).
+const sizesOf = (marks) => marks.filter(m => m.marks > 0 && (m.papers || m.written))
+
+const SCORE_HINT = 'Marks scored ÷ marks possible, over the papers a mentor has checked'
+
+// The page's one visual language for tests: a bar split into checked (green),
+// waiting for a mentor (amber) and not written yet (grey track).
+function StackBar({ checked, waiting, of, className = 'h-2' }) {
+  const c = pctOf(checked, of)
+  const w = Math.min(100 - c, pctOf(waiting, of))
   return (
-    <div className="px-5 py-3 border-b border-gray-100">
-      <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide mb-2">Marks by subject</p>
-      <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
-        {bySubject.map(s => (
-          <div key={s.subjectId || s.name} className="flex items-center gap-3 bg-gray-50 rounded-lg px-3 py-2">
-            <div className="flex-1 min-w-0">
-              <p className="text-xs font-medium text-gray-900 truncate" title={s.name}>{s.name}</p>
-              <p className="text-[11px] text-gray-400">
-                {s.evaluated}/{s.submitted} evaluated
-                {s.evaluated > 0 && ` · ${s.awarded}/${s.total} marks`}
-                {s.bestPercent != null && ` · best ${s.bestPercent}%`}
-              </p>
-            </div>
-            {s.evaluated > 0 ? (
-              <span className={`text-sm font-bold flex-shrink-0 ${TEXT_TONES[toneFor(s.percent)]}`}>{s.percent}%</span>
-            ) : (
-              <span className="text-[11px] text-gray-300 flex-shrink-0">not evaluated</span>
-            )}
-          </div>
-        ))}
+    <div className={`flex bg-gray-100 rounded-full overflow-hidden ${className}`}
+      title={`${checked} checked · ${waiting} waiting · ${Math.max(0, of - checked - waiting)} not written`}>
+      {c > 0 && <div className="bg-emerald-500 h-full" style={{ width: `${c}%` }} />}
+      {w > 0 && <div className="bg-amber-400 h-full" style={{ width: `${w}%` }} />}
+    </div>
+  )
+}
+
+function Dot({ tone }) {
+  const bg = { emerald: 'bg-emerald-500', amber: 'bg-amber-400', gray: 'bg-gray-200' }[tone]
+  return <span className={`inline-block w-2 h-2 rounded-full ${bg}`} />
+}
+
+// "55%" in a soft pill coloured by how good it is.
+function ScorePill({ percent, size = 'sm' }) {
+  if (percent == null) return null
+  const pad = size === 'lg' ? 'text-sm px-2.5 py-1' : 'text-[11px] px-1.5 py-0.5'
+  return (
+    <span title={SCORE_HINT} className={`inline-flex items-center rounded-md font-bold ${pad} ${SOFT_TONES[toneFor(percent)]}`}>
+      {percent}%
+    </span>
+  )
+}
+
+function SizeChips({ marks }) {
+  const sizes = sizesOf(marks)
+  if (!sizes.length) return null
+  return (
+    <div className="flex flex-wrap gap-1">
+      {sizes.map(m => (
+        <span key={m.marks} className="text-[11px] bg-gray-50 border border-gray-100 rounded-md px-1.5 py-0.5 text-gray-500">
+          {m.marks} marks · <b className="text-gray-800">{m.written}</b>/{m.papers}
+        </span>
+      ))}
+    </div>
+  )
+}
+
+// Big picture for the whole section: written so far, where those papers stand,
+// and the score — one glance before any table.
+function CoverageOverview({ grand, grandPercent }) {
+  const left = Math.max(0, grand.canWrite - grand.written)
+  return (
+    <div className="rounded-2xl bg-gradient-to-br from-indigo-50 via-white to-white border border-indigo-100 px-5 py-4 grid gap-5 md:grid-cols-[1fr_auto] items-center">
+      <div className="min-w-0">
+        <p className="text-[11px] font-semibold text-indigo-500 uppercase tracking-wide">Tests written</p>
+        <p className="mt-1 text-gray-900 leading-none">
+          <span className="text-4xl font-bold">{grand.written}</span>
+          <span className="text-lg text-gray-400 font-medium"> / {grand.canWrite}</span>
+          <span className="ml-2 text-sm text-gray-500">({pctOf(grand.written, grand.canWrite)}% of available tests)</span>
+        </p>
+        <StackBar checked={grand.evaluated} waiting={grand.awaiting} of={grand.canWrite} className="h-3 mt-3" />
+        <div className="flex items-center gap-4 mt-2 text-xs text-gray-600 flex-wrap">
+          <span className="flex items-center gap-1.5"><Dot tone="emerald" /><b>{grand.evaluated}</b> checked</span>
+          <span className="flex items-center gap-1.5"><Dot tone="amber" /><b>{grand.awaiting}</b> waiting for mentor</span>
+          <span className="flex items-center gap-1.5"><Dot tone="gray" /><b>{left}</b> not written yet</span>
+        </div>
+      </div>
+      <div className="md:text-right md:border-l md:border-indigo-100 md:pl-6">
+        <p className="text-[11px] font-semibold text-indigo-500 uppercase tracking-wide">Average score</p>
+        {grandPercent != null ? (
+          <>
+            <p className={`text-4xl font-bold mt-1 leading-none ${TEXT_TONES[toneFor(grandPercent)]}`} title={SCORE_HINT}>{grandPercent}%</p>
+            <p className="text-xs text-gray-500 mt-2">{fmtMarks(grand.awarded)} of {fmtMarks(grand.total)} marks</p>
+          </>
+        ) : (
+          <>
+            <p className="text-4xl font-bold mt-1 leading-none text-gray-300">—</p>
+            <p className="text-xs text-gray-400 mt-2">No checked papers yet</p>
+          </>
+        )}
       </div>
     </div>
   )
 }
 
-function TestMarksSection({ studentId, bySubject }) {
-  const [filters, setFilters] = useState({ page: 1, limit: 20, status: '', subjectId: '', dateFrom: '', dateTo: '' })
+// One card per paper type: count, the same split bar, score, paper sizes.
+function TypeCard({ t }) {
+  const info = TYPE_INFO[t.key]
+  const inPlan = t.canWrite > 0 || t.written > 0
+  return (
+    <div className={`rounded-xl border border-gray-200 border-t-4 ${info.edge} bg-white px-4 py-4 min-w-0 flex flex-col gap-3`}>
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <p className={`text-sm font-bold ${info.text}`}>{info.title}</p>
+          <p className="text-[11px] text-gray-400 mt-0.5">{info.blurb}</p>
+        </div>
+        <ScorePill percent={t.percent} size="lg" />
+      </div>
+
+      {!inPlan ? (
+        <p className="text-sm text-gray-400 py-4">Not in this student's plan</p>
+      ) : (
+        <>
+          <p className="text-gray-900 leading-none">
+            <span className="text-3xl font-bold">{t.written}</span>
+            <span className="text-sm text-gray-400"> / {t.canWrite} written</span>
+          </p>
+          <StackBar checked={t.evaluated} waiting={t.awaiting} of={t.canWrite} />
+          <div className="flex items-center gap-3 text-[11px] text-gray-600 flex-wrap">
+            <span className="flex items-center gap-1"><Dot tone="emerald" />{t.evaluated} checked</span>
+            <span className="flex items-center gap-1"><Dot tone="amber" />{t.awaiting} waiting</span>
+            <span className="flex items-center gap-1"><Dot tone="gray" />{t.left} left</span>
+          </div>
+          {t.opened > 0 && <p className="text-[11px] text-amber-600 -mt-1">{t.opened} started but not submitted</p>}
+          <div className="mt-auto pt-3 border-t border-gray-100">
+            <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide mb-1.5">Paper sizes · written / available</p>
+            <SizeChips marks={t.marks} />
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+// One subject × type cell. Quiet when nothing's been written; clickable (it
+// narrows the submission list below) once there is something to look at.
+function CoverageCell({ c, showSizes, onOpen }) {
+  if (!c.canWrite && !c.written && !c.opened) {
+    return <td className="px-4 py-3.5 text-xs text-gray-300" title="No papers of this type in the student's plan">—</td>
+  }
+  const active = c.written > 0
+  const allDone = c.canWrite > 0 && c.written >= c.canWrite
+  const body = (
+    <>
+      <div className="flex items-center gap-2">
+        <span className={active ? 'text-gray-900' : 'text-gray-400'}>
+          <b className="text-[15px]">{c.written}</b><span className="text-xs"> / {c.canWrite}</span>
+        </span>
+        {allDone && <span className="text-[10px] font-bold text-emerald-600">✓ ALL</span>}
+        <ScorePill percent={c.percent} />
+        {c.awaiting > 0 && (
+          <span className="text-[10px] font-semibold text-amber-700 bg-amber-50 rounded px-1.5 py-0.5">{c.awaiting} waiting</span>
+        )}
+        {active && <span className="ml-auto text-[11px] font-semibold text-indigo-600 opacity-0 group-hover:opacity-100 transition">View →</span>}
+      </div>
+      <StackBar checked={c.evaluated} waiting={c.awaiting} of={c.canWrite} className="h-1.5 mt-1.5 w-32" />
+      {c.opened > 0 && <p className="text-[11px] text-amber-600 mt-1">{c.opened} started, not submitted</p>}
+      {c.allowance != null && (
+        <p className="text-[11px] text-gray-400 mt-1" title={`The plan lets this student pick any ${c.allowance} of the ${c.papers} papers`}>
+          Plan: any {c.allowance} of {c.papers}
+        </p>
+      )}
+      {showSizes && <div className="mt-1.5"><SizeChips marks={c.marks} /></div>}
+    </>
+  )
+  return (
+    <td className="px-2 py-2 align-top">
+      {active ? (
+        <button type="button" onClick={onOpen} title="Show these papers in the submission list below"
+          className="group w-full text-left rounded-lg px-2 py-1.5 hover:bg-indigo-50 hover:ring-1 hover:ring-indigo-100 transition">
+          {body}
+        </button>
+      ) : (
+        <div className="px-2 py-1.5">{body}</div>
+      )}
+    </td>
+  )
+}
+
+// Column totals over the subjects on screen, so the cards and the Total row
+// always add up to the rows the admin can see (enrolled only, or all).
+function totalsFor(typeMeta, rows) {
+  return typeMeta.map(meta => {
+    const t = { ...meta, papers: 0, canWrite: 0, written: 0, evaluated: 0, awaiting: 0, opened: 0, left: 0, awarded: 0, total: 0 }
+    const marks = new Map()
+    for (const r of rows) {
+      const c = r.types[meta.key]
+      for (const k of ['papers', 'canWrite', 'written', 'evaluated', 'awaiting', 'opened', 'left', 'awarded', 'total']) t[k] += c[k]
+      for (const m of c.marks) {
+        const x = marks.get(m.marks) || { marks: m.marks, papers: 0, written: 0 }
+        x.papers += m.papers
+        x.written += m.written
+        marks.set(m.marks, x)
+      }
+    }
+    t.percent = t.evaluated ? pctOf(t.awarded, t.total) : null
+    t.marks = [...marks.values()].sort((a, b) => a.marks - b.marks)
+    return t
+  })
+}
+
+// A small help pop-up that behaves like a menu: opens on click, closes on a
+// click anywhere outside it, on Esc, or on the button again.
+function HelpPopover({ label, children }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef(null)
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
+    const onKey = (e) => { if (e.key === 'Escape') setOpen(false) }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('touchstart', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('touchstart', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open])
+  return (
+    <div ref={ref} className="relative text-xs">
+      <button type="button" onClick={() => setOpen(o => !o)} aria-expanded={open}
+        className="font-semibold text-indigo-600 hover:text-indigo-800 select-none">
+        {label}
+      </button>
+      {open && (
+        <div role="dialog"
+          className="absolute right-0 z-30 mt-2 w-80 max-w-[calc(100vw-2rem)] bg-white border border-gray-200 rounded-xl shadow-lg p-4 pr-9 space-y-2 text-gray-600 leading-relaxed">
+          <button type="button" onClick={() => setOpen(false)} aria-label="Close"
+            className="absolute top-2 right-2 w-6 h-6 rounded-md text-gray-400 hover:text-gray-700 hover:bg-gray-100">✕</button>
+          {children}
+        </div>
+      )}
+    </div>
+  )
+}
+
+const SCOPE_CHIP = {
+  class:         { tone: 'indigo', hint: 'Class student — only the subjects they are enrolled for are counted' },
+  kit:           { tone: 'gray',   hint: 'No classes booked or bought, so every subject in their plan is counted' },
+  'class-unset': { tone: 'amber',  hint: 'Set their level and group from Users → Course to narrow this to their subjects' },
+}
+
+// "How many tests could they write, and how many did they?" — per subject and
+// per paper type. Available = the papers in the student's plan (the same list
+// their own Test Series page shows, after any "any N per subject" cap).
+function TestCoverage({ studentId, onOpen }) {
+  const { data, error, loading } = useResource(`/api/admin/users/${studentId}/test-coverage`, null)
+  const [showSizes, setShowSizes] = useState(false)
+  const [showAll, setShowAll] = useState(false)
+
+  if (loading) {
+    return (
+      <div className="p-5 border-b border-gray-100 space-y-3">
+        <div className="h-28 bg-gray-100 rounded-2xl animate-pulse" />
+        <div className="grid gap-3 md:grid-cols-3">
+          {[1, 2, 3].map(i => <div key={i} className="h-48 bg-gray-100 rounded-xl animate-pulse" />)}
+        </div>
+      </div>
+    )
+  }
+  if (error) return <div className="border-b border-gray-100"><Empty title="Couldn't load test coverage" hint={error} /></div>
+  if (!data) return null
+
+  if (!data.subjects.length) {
+    return (
+      <div className="border-b border-gray-100">
+        <Empty title="No test series in this student's plan"
+          hint="None of their products include test-series papers, and they haven't written any." />
+      </div>
+    )
+  }
+
+  const scope = data.scope || { mode: 'kit', label: '' }
+  const enrolled = data.subjects.filter(s => s.enrolled !== false)
+  const outside = data.subjects.filter(s => s.enrolled === false)
+  const outsideWritten = outside.reduce((n, s) => n + s.summary.written, 0)
+  const subjects = showAll ? data.subjects : enrolled
+  const types = totalsFor(data.types, subjects)
+
+  const grand = types.reduce((a, t) => ({
+    written: a.written + t.written, canWrite: a.canWrite + t.canWrite, evaluated: a.evaluated + t.evaluated,
+    awaiting: a.awaiting + t.awaiting, awarded: a.awarded + t.awarded, total: a.total + t.total,
+  }), { written: 0, canWrite: 0, evaluated: 0, awaiting: 0, awarded: 0, total: 0 })
+  const grandPercent = grand.evaluated ? pctOf(grand.awarded, grand.total) : null
+
+  const chip = SCOPE_CHIP[scope.mode] || SCOPE_CHIP.kit
+  const chipText = scope.mode === 'class' ? `Enrolled: ${scope.label}`
+    : scope.mode === 'kit' ? 'Kit student · all subjects' : 'Class student · no group set · all subjects'
+
+  return (
+    <div className="border-b border-gray-100 p-5 space-y-4">
+      {/* scope + controls */}
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="flex items-center gap-3 flex-wrap">
+          <p className="text-sm font-semibold text-gray-900">Tests available vs written</p>
+          <Badge tone={chip.tone} title={chip.hint}>{chipText}</Badge>
+          {outside.length > 0 && (
+            <label className="flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer select-none">
+              <input type="checkbox" checked={showAll} onChange={e => setShowAll(e.target.checked)}
+                className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-400" />
+              Show all subjects <span className="text-gray-400">(+{outside.length} not enrolled)</span>
+            </label>
+          )}
+        </div>
+        <HelpPopover label="ⓘ How to read this">
+          <p><b>Available</b> — test papers this student's plan lets them write.</p>
+          <p><b>Written</b> — papers they submitted. Writing the same paper again counts once.</p>
+          <p><Dot tone="emerald" /> <b>Checked</b> — a mentor corrected it and gave marks.</p>
+          <p><Dot tone="amber" /> <b>Waiting</b> — submitted, not corrected yet.</p>
+          <p><b>Score</b> — marks scored ÷ marks possible, over checked papers. A 50-mark paper counts double a 25-mark one.</p>
+          {data.limited && <p><b>Plan: any N</b> — the student picks which N papers to write in that subject.</p>}
+          <p className="text-gray-400">Click any highlighted cell to see those papers in the list below.</p>
+        </HelpPopover>
+      </div>
+
+      {!showAll && outsideWritten > 0 && (
+        <div className="flex items-start gap-2.5 text-xs text-amber-800 bg-amber-50 border border-amber-100 rounded-xl px-3.5 py-2.5">
+          <span className="text-base leading-none">⚠</span>
+          <p className="flex-1">
+            <b>{outsideWritten} test{outsideWritten === 1 ? '' : 's'}</b> written in subjects outside their enrolment
+            ({outside.filter(s => s.summary.written > 0).map(s => s.name).join(', ')}) are not counted below.
+          </p>
+          <button type="button" onClick={() => setShowAll(true)}
+            className="font-semibold text-amber-900 bg-white border border-amber-200 rounded-lg px-2.5 py-1 hover:bg-amber-100 whitespace-nowrap">
+            Include them
+          </button>
+        </div>
+      )}
+
+      <CoverageOverview grand={grand} grandPercent={grandPercent} />
+
+      <div className="grid gap-3 md:grid-cols-3">
+        {types.map(t => <TypeCard key={t.key} t={t} />)}
+      </div>
+
+      {/* subject matrix */}
+      <div className="rounded-xl border border-gray-200 overflow-hidden">
+        <div className="px-4 py-3 bg-gray-50/80 border-b border-gray-200 flex items-center justify-between gap-3 flex-wrap">
+          <p className="text-sm font-semibold text-gray-900">Subject by subject</p>
+          <div className="flex items-center gap-4 flex-wrap">
+            <div className="hidden sm:flex items-center gap-3 text-[11px] text-gray-500">
+              <span className="flex items-center gap-1"><Dot tone="emerald" />Checked</span>
+              <span className="flex items-center gap-1"><Dot tone="amber" />Waiting</span>
+              <span className="flex items-center gap-1"><Dot tone="gray" />Not written</span>
+            </div>
+            <label className="flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer select-none">
+              <input type="checkbox" checked={showSizes} onChange={e => setShowSizes(e.target.checked)}
+                className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-400" />
+              Show paper sizes
+            </label>
+          </div>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm min-w-[860px]">
+            <thead>
+              <tr className="text-[11px] font-semibold text-gray-500 uppercase tracking-wide border-b border-gray-100">
+                <th className="text-left px-4 py-2.5 w-[24%]">Subject</th>
+                {types.map(t => <th key={t.key} className="text-left px-4 py-2.5">{t.label}</th>)}
+                <th className="text-left px-4 py-2.5">Overall</th>
+              </tr>
+            </thead>
+            <tbody>
+              {!subjects.length && (
+                <tr><td colSpan={types.length + 2} className="px-5 py-8">
+                  <Empty title="No test papers for the subjects this student is enrolled in"
+                    hint='Tick "Show all subjects" to see the other subjects in their plan.' />
+                </td></tr>
+              )}
+              {(showAll ? enrolled : subjects).map(s => (
+                <SubjectRow key={s.subjectId || s.name} s={s} types={types} showSizes={showSizes} onOpen={onOpen} />
+              ))}
+              {showAll && outside.length > 0 && (
+                <>
+                  <tr className="bg-gray-50">
+                    <td colSpan={types.length + 2} className="px-4 py-2 text-[11px] font-semibold text-gray-500 uppercase tracking-wide">
+                      Not enrolled · {outside.length} subject{outside.length === 1 ? '' : 's'}
+                    </td>
+                  </tr>
+                  {outside.map(s => (
+                    <SubjectRow key={s.subjectId || s.name} s={s} types={types} showSizes={showSizes} onOpen={onOpen} muted />
+                  ))}
+                </>
+              )}
+            </tbody>
+            <tfoot>
+              <tr className="bg-gray-50 border-t border-gray-200 text-xs text-gray-700">
+                <td className="px-4 py-3 font-bold uppercase tracking-wide text-[11px] text-gray-500">Total</td>
+                {types.map(t => (
+                  <td key={t.key} className="px-4 py-3">
+                    <span className="flex items-center gap-2"><span><b>{t.written}</b> / {t.canWrite}</span><ScorePill percent={t.percent} /></span>
+                  </td>
+                ))}
+                <td className="px-4 py-3">
+                  <span className="flex items-center gap-2"><span><b>{grand.written}</b> / {grand.canWrite}</span><ScorePill percent={grandPercent} /></span>
+                </td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function SubjectRow({ s, types, showSizes, onOpen, muted }) {
+  const done = pctOf(s.summary.written, s.summary.canWrite)
+  return (
+    <tr className={`align-top border-b border-gray-100 last:border-0 ${muted ? 'bg-gray-50/40' : ''}`}>
+      <td className="px-4 py-3.5">
+        <p className={`font-medium truncate ${muted ? 'text-gray-500' : 'text-gray-900'}`} title={s.name}>{s.name}</p>
+        {s.level && <p className="text-[11px] text-gray-400 mt-0.5">{s.level}</p>}
+      </td>
+      {types.map(t => (
+        <CoverageCell key={t.key} c={s.types[t.key]} showSizes={showSizes}
+          onOpen={() => onOpen({ subjectId: s.subjectId || '', testSeriesType: t.key })} />
+      ))}
+      <td className="px-4 py-3.5 whitespace-nowrap">
+        <div className="flex items-center gap-2">
+          <span className={s.summary.written ? 'text-gray-900' : 'text-gray-400'}>
+            <b>{s.summary.written}</b><span className="text-xs"> / {s.summary.canWrite}</span>
+          </span>
+          {s.summary.written > 0 && <span className="text-[11px] text-gray-400">{done}%</span>}
+          <ScorePill percent={s.summary.percent} />
+        </div>
+        <StackBar checked={s.summary.evaluated} waiting={s.summary.awaiting} of={s.summary.canWrite} className="h-1.5 mt-1.5 w-28" />
+      </td>
+    </tr>
+  )
+}
+
+function TestMarksSection({ studentId }) {
+  const [filters, setFilters] = useState({ page: 1, limit: 20, status: '', subjectId: '', testSeriesType: '', dateFrom: '', dateTo: '' })
   const [fileError, setFileError] = useState('')
   const set = (patch) => setFilters(f => ({ ...f, page: 1, ...patch }))
   const { data, error, loading } = useResource(`/api/admin/users/${studentId}/test-marks`, filters)
@@ -806,9 +1211,21 @@ function TestMarksSection({ studentId, bySubject }) {
   const rows = data?.rows || []
   const s = data?.summary
 
+  // A coverage cell was clicked: show just those papers and bring the list into view.
+  const openCell = (patch) => {
+    set({ status: '', dateFrom: '', dateTo: '', ...patch })
+    document.getElementById('test-log')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+
   return (
     <Section id="tests" index={3} title="Test marks"
-      subtitle="Date-wise test submissions with the marks awarded. Filter by subject to see one paper's history.">
+      subtitle="How many chapter-wise, segment-wise and full tests this student could write and has written, then every submission date-wise with its marks.">
+      <TestCoverage studentId={studentId} onOpen={openCell} />
+
+      <div id="test-log" className="scroll-mt-4 px-5 pt-4">
+        <p className="text-xs font-semibold text-gray-700">Every submission</p>
+      </div>
+
       {s && (
         <Tallies items={[
           { label: 'Submitted', value: s.submitted },
@@ -819,19 +1236,21 @@ function TestMarksSection({ studentId, bySubject }) {
         ]} />
       )}
 
-      <SubjectMarks bySubject={bySubject || []} />
-
       <LogFilters
-        subjects={data?.subjects || []} status={filters.status}
+        subjects={data?.subjects || []} status={filters.status || filters.testSeriesType}
         subjectId={filters.subjectId} onSubject={v => set({ subjectId: v })}
         dateFrom={filters.dateFrom} dateTo={filters.dateTo}
         onDate={(which, v) => set(which === 'from' ? { dateFrom: v } : { dateTo: v })}
-        onReset={() => set({ subjectId: '', dateFrom: '', dateTo: '', status: '' })}>
+        onReset={() => set({ subjectId: '', testSeriesType: '', dateFrom: '', dateTo: '', status: '' })}>
         <div className="flex gap-1">
           {TEST_STATUS.map(o => (
             <Chip key={o.key} active={filters.status === o.key} onClick={() => set({ status: o.key })} tone={o.tone}>{o.label}</Chip>
           ))}
         </div>
+        <select value={filters.testSeriesType} onChange={e => set({ testSeriesType: e.target.value })} className={inputCls}>
+          <option value="">All test types</option>
+          {Object.entries(TEST_TYPE_LABEL).map(([k, label]) => <option key={k} value={k}>{label}</option>)}
+        </select>
       </LogFilters>
 
       {fileError && <p className="px-5 py-2 text-xs text-rose-600 bg-rose-50">{fileError}</p>}
@@ -866,7 +1285,9 @@ function TestMarksSection({ studentId, bySubject }) {
                       <td className="px-5 py-3 max-w-[240px]">
                         <p className="text-gray-900 truncate" title={r.fileName}>{r.fileName || 'Untitled test'}</p>
                         <p className="text-[11px] text-gray-400 truncate">
-                          {[r.level, r.testSeriesType, r.testDuration ? `${r.testDuration} min` : null].filter(Boolean).join(' · ') || '—'}
+                          {[r.level, TEST_TYPE_LABEL[r.testSeriesType] || r.testSeriesType,
+                            r.totalMarks ? `${r.totalMarks} marks` : null,
+                            r.testDuration ? `${r.testDuration} min` : null].filter(Boolean).join(' · ') || '—'}
                         </p>
                       </td>
                       <td className="px-5 py-3 max-w-[220px]">
@@ -1186,7 +1607,7 @@ export default function StudentProgressPage() {
 
       <SyllabusSection syllabus={syllabus} classes={classes} thresholdPercent={thresholdPercent} onMark={markRow} busyKey={busyKey} />
       <AttendanceSection studentId={id} />
-      <TestMarksSection studentId={id} bySubject={tests.bySubject} />
+      <TestMarksSection studentId={id} />
       <LecturesSection studentId={id} />
     </div>
   )
