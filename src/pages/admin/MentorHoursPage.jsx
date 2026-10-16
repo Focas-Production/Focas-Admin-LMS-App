@@ -6,6 +6,7 @@
 // Click a month to see its slots; the CSV buttons give the same data.
 import { Fragment, useState, useEffect, useMemo } from 'react'
 import { apiFetch } from '../../api'
+import MentorStatementsPanel from './MentorStatementsPanel'
 
 const selectCls = 'text-sm px-3 py-2 bg-white border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-400'
 
@@ -539,6 +540,8 @@ export default function MentorHoursPage() {
         )}
         <p className="text-gray-400">Cancelled and future classes are left out. A slot the mentor never joined counts as missed.</p>
       </div>
+
+      <MentorStatementsPanel />
     </div>
   )
 }
