@@ -174,6 +174,7 @@ export default function SchedulerBoard({ rooms, hallRooms, hosts, classes, onCha
   const [review, setReview]     = useState(false)  // review-and-save modal open
   const [clipboard, setClipboard] = useState(null) // { ids: [], from: label } — copied roster
   const [hallClip, setHallClip] = useState(null)   // copied FOCAS Hall session — Hall form fields + from
+  const [hallSaving, setHallSaving] = useState(null) // Hall session id while a dropped student is being saved
   const [newMeta, setNewMeta]   = useState({})     // cellId → { title, hostUserId, subjectId, chapterId, unitId, day, slot, col }
   const [setup, setSetup]       = useState(null)   // cell being configured: { cellId, day, slot, col, hostUserId, subjectId, chapterId, unitId }
   const [saving, setSaving]     = useState(false)
@@ -641,6 +642,38 @@ export default function SchedulerBoard({ rooms, hallRooms, hosts, classes, onCha
 
   const pasteHall = (day) => {
     if (hallClip) onBookHall?.({ ...hallClip.fields, date: toDateInput(day) })
+  }
+
+  // Drop a student onto a Hall session — saved at once (Hall sessions skip the
+  // staged Review & save, like the Who-can-join form). An empty list means the
+  // session is open to everyone, so narrowing it to one student is confirmed.
+  const dropOnHall = async (c, studentId) => {
+    setOverCell(null); setDragId(null)
+    if (!studentId || c.status !== 'scheduled' || hallSaving) return
+    const current = (c.allowedStudents || []).map(String)
+    if (current.includes(String(studentId))) return
+    const name = byId.get(String(studentId))?.name || 'this student'
+    if (!current.length && !window.confirm(
+      `"${c.title}" is open to every student right now.\n\nAdd ${name} and limit it to the listed students only?`)) return
+    setHallSaving(c._id); setError('')
+    try {
+      await saveWithClashCheck((extra) => apiFetch(`/api/live-classes/manage/${c._id}/students`, {
+        method: 'PUT', body: JSON.stringify({ studentIds: [...current, String(studentId)], ...extra }),
+      }))
+      setOpenCells(o => ({ ...o, [`hall:${c._id}`]: true }))   // show who was just added
+      await onChanged()
+    } catch (err) {
+      setError(err.message || 'Could not add the student')
+    } finally {
+      setHallSaving(null)
+    }
+  }
+
+  // Taking the last student off a Hall session opens it to everyone — confirm that.
+  const removeHallStudent = (c, studentId) => {
+    if ((c.allowedStudents || []).length === 1 && !window.confirm(
+      `${chipName(studentId)} is the only student on "${c.title}".\n\nRemove them and open the session to every student?`)) return
+    removeSaved(c, studentId)
   }
 
   // "3 students + mentor & subject" / "3 students" — for the pill and buttons.
@@ -1240,8 +1273,16 @@ export default function SchedulerBoard({ rooms, hallRooms, hosts, classes, onCha
                       <div className="flex flex-wrap gap-2">
                         {hallList.map(c => {
                           const n = (c.allowedStudents || []).length
+                          const dropId = `hall:${c._id}`
+                          const canDrop = c.status === 'scheduled'
                           return (
-                            <div key={c._id} className="relative w-64 rounded-xl border border-violet-200 bg-white shadow-sm pl-3 pr-2.5 py-2">
+                            <div key={c._id}
+                              onDragOver={e => { if (!canDrop) return; e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; setOverCell(dropId) }}
+                              onDragLeave={() => setOverCell(o => (o === dropId ? null : o))}
+                              onDrop={e => { if (!canDrop) return; e.preventDefault(); dropOnHall(c, e.dataTransfer.getData('text/plain')) }}
+                              className={`relative w-64 rounded-xl border shadow-sm pl-3 pr-2.5 py-2 transition-colors
+                                ${overCell === dropId ? 'border-violet-500 bg-violet-50' : 'border-violet-200 bg-white'}
+                                ${hallSaving === c._id ? 'opacity-60' : ''}`}>
                               <span className="absolute left-0 top-2 bottom-2 w-[3px] rounded-r-full bg-violet-500" />
                               <button type="button" onClick={() => copyHall(c)}
                                 title="Copy this session — then paste it onto any other day"
@@ -1263,9 +1304,35 @@ export default function SchedulerBoard({ rooms, hallRooms, hosts, classes, onCha
                                 <p className="mt-0.5 text-[13px] font-semibold text-gray-900 leading-snug break-words">{c.title}</p>
                                 <p className="mt-0.5 text-[11px] text-gray-500 truncate"
                                   title={`${c.track?.label || ''} · ${c.host?.name || ''}`}>
-                                  {c.track?.label} · {c.host?.name || '—'} · {n ? `👥 ${n}` : 'open to all'}{c.recordingWanted ? ' · ⏺ rec' : ''}
+                                  {c.track?.label} · {c.host?.name || '—'}{c.recordingWanted ? ' · ⏺ rec' : ''}
                                 </p>
                               </button>
+                              {/* Who can join — same 👥 toggle + chips as a room slot. */}
+                              <div className="mt-1 flex flex-wrap items-center gap-1">
+                                {n ? (
+                                  <button type="button"
+                                    onClick={() => setOpenCells(o => ({ ...o, [dropId]: !o[dropId] }))}
+                                    title={openCells[dropId] ? 'Hide students' : 'Show who can join'}
+                                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md border bg-violet-50 border-violet-200 shrink-0">
+                                    <span className="text-[10px] leading-none">👥</span>
+                                    <span className="text-[13px] font-bold leading-none text-violet-700">{n}</span>
+                                    <span className="text-[9px] leading-none text-gray-400">{openCells[dropId] ? '▾' : '▸'}</span>
+                                  </button>
+                                ) : (
+                                  <span className="text-[10px] text-gray-400 italic">open to all</span>
+                                )}
+                                {(openCells[dropId] ? c.allowedStudents || [] : []).map(id => (
+                                  <span key={String(id)}
+                                    className="inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded-md bg-violet-100 text-violet-700">
+                                    {chipName(id)}
+                                    {canDrop && (
+                                      <button type="button" onClick={() => removeHallStudent(c, id)}
+                                        title="Remove from this session"
+                                        className="font-bold leading-none text-violet-400 hover:text-violet-800">×</button>
+                                    )}
+                                  </span>
+                                ))}
+                              </div>
                             </div>
                           )
                         })}
