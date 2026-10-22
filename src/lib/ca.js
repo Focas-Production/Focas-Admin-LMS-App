@@ -26,10 +26,10 @@ const MONTH_INDEX = { Jan: 0, May: 4, Sep: 8, Nov: 10 }
 
 // The sittings a student of `level` could currently be preparing for: every
 // attempt from this month through the next `monthsAhead` months. Today (say
-// Aug 2026) that is Sep 2026 / Jan 2027 / May 2027 / Sep 2027 for Intermediate
-// and Nov 2026 / May 2027 / Nov 2027 for Final — the window rolls forward on
-// its own, so nobody has to come back and add next year's dates.
-export function upcomingAttempts(level, monthsAhead = 15) {
+// Oct 2026) that is Jan 2027 … May 2028 for Intermediate and Nov 2026 /
+// May 2027 / Nov 2027 / May 2028 for Final — the window rolls forward on its
+// own, so nobody has to come back and add next year's dates.
+export function upcomingAttempts(level, monthsAhead = 20) {
   const months = ATTEMPT_MONTHS[level]
   if (!months) return []
   const now = new Date()

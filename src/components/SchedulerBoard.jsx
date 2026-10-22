@@ -38,6 +38,13 @@ const fmtHour = (h) => {
 
 const dayKey = (d) => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`
 
+// FOCAS Hall sessions keep their own clock times — "HH:MM" / "YYYY-MM-DD" in
+// the shape the Hall form's inputs take.
+const pad2 = (n) => String(n).padStart(2, '0')
+const toDateInput = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`
+const toTimeInput = (d) => `${pad2(d.getHours())}:${pad2(d.getMinutes())}`
+const fmtClock = (d) => new Date(d).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
+
 // Two-letter initials for the mentor badge ("Pavaharini" → "PA", "Hari Prasath" → "HP").
 const initials = (name = '') => {
   const parts = String(name).trim().split(/\s+/).filter(Boolean)
@@ -139,7 +146,7 @@ const ROSTER_BADGE = {
   'not-allotted': ['Not allotted', 'text-gray-500 bg-gray-100'],
 }
 
-export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onStagedCount }) {
+export default function SchedulerBoard({ rooms, hallRooms, hosts, classes, onChanged, onStagedCount, onBookHall, onEditClass }) {
   const [students, setStudents] = useState(null)   // full roster for the left panel
   const [search, setSearch]     = useState('')
   const [enrolFilter, setEnrolFilter] = useState('all')   // see ENROLMENT_CHIPS
@@ -166,6 +173,7 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
   const [staged, setStaged]     = useState({})     // cellId → { day, slot, col, ids: [] }
   const [review, setReview]     = useState(false)  // review-and-save modal open
   const [clipboard, setClipboard] = useState(null) // { ids: [], from: label } — copied roster
+  const [hallClip, setHallClip] = useState(null)   // copied FOCAS Hall session — Hall form fields + from
   const [newMeta, setNewMeta]   = useState({})     // cellId → { title, hostUserId, subjectId, chapterId, unitId, day, slot, col }
   const [setup, setSetup]       = useState(null)   // cell being configured: { cellId, day, slot, col, hostUserId, subjectId, chapterId, unitId }
   const [saving, setSaving]     = useState(false)
@@ -562,6 +570,7 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
       ? { hostUserId: String(src.hostUserId), subjectId: String(src.subjectId) }
       : null
     if (!ids.length && !meta) return
+    setHallClip(null)
     setClipboard({ ids, meta, from: `${col.roomLabel} ${col.trackLabel} · ${slot.name}` })
   }
 
@@ -597,6 +606,41 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
     } else {
       openSetup(day, slot, col)
     }
+  }
+
+  // ── FOCAS Hall ──
+  // Hall sessions run at any time, not in the fixed slots, so the Hall view
+  // lists only what is booked each day — no empty slot rows. Booking and
+  // editing go through the page's Hall forms. Paste re-opens the booking form
+  // pre-filled for another day, and the copy stays until cleared, so one
+  // session can be pasted onto as many days as needed.
+  const hallKeys = useMemo(() => new Set((hallRooms || []).map(r => r.key)), [hallRooms])
+  const hallSessionsOn = (day) => active
+    .filter(c => hallKeys.has(c.room?.key) && dayKey(new Date(c.scheduledStart)) === dayKey(day))
+    .sort((a, b) => new Date(a.scheduledStart) - new Date(b.scheduledStart))
+
+  const copyHall = (c) => {
+    const start = new Date(c.scheduledStart)
+    setClipboard(null)
+    setHallClip({
+      from: `${c.track?.label || 'Hall'} · ${start.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })} ${fmtClock(start)}`,
+      fields: {
+        title: c.title || '', description: c.description || '',
+        sessionType: c.sessionType && c.sessionType !== 'class' ? c.sessionType : '',
+        record: c.recordingWanted === true,
+        hostUserId: c.host?.userId ? String(c.host.userId) : '',
+        ...(c.room?.key && c.track?.key ? { trackSel: `${c.room.key}|${c.track.key}` } : {}),
+        startTime: toTimeInput(start), endTime: toTimeInput(new Date(c.scheduledEnd)),
+        students: (c.allowedStudents || []).map(String).map(id => {
+          const s = byId.get(id)
+          return { id, name: s?.name || '', phoneNumber: s?.phoneNumber || '' }
+        }),
+      },
+    })
+  }
+
+  const pasteHall = (day) => {
+    if (hallClip) onBookHall?.({ ...hallClip.fields, date: toDateInput(day) })
   }
 
   // "3 students + mentor & subject" / "3 students" — for the pill and buttons.
@@ -905,7 +949,11 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
           {(rooms || []).length > 1 && (
             <div className="flex justify-end">
               <div className="inline-flex bg-white border border-gray-200 rounded-xl p-0.5 shadow-sm">
-                {[...(rooms || []).map(r => ({ key: r.key, label: r.label })), { key: 'all', label: (rooms || []).length > 2 ? 'All rooms' : 'Both rooms' }].map(opt => {
+                {[
+                  ...(rooms || []).map(r => ({ key: r.key, label: r.label })),
+                  ...((hallRooms || []).length ? [{ key: 'hall', label: hallRooms[0].label || 'FOCAS Hall' }] : []),
+                  { key: 'all', label: (rooms || []).length > 2 ? 'All rooms' : 'Both rooms' },
+                ].map(opt => {
                   // Staged students waiting inside this room, so a hidden room
                   // with pending drops is never forgotten.
                   const stagedHere = opt.key === 'all' ? 0 : Object.values(staged)
@@ -945,7 +993,7 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
                   <span className="text-gray-300 text-xs">{folded ? '▸' : '▾'}</span>
                 </button>
 
-                {!folded && (
+                {!folded && activeRoom !== 'hall' && (
                   <div className="border-t border-gray-100 px-3 pb-3 pt-1 overflow-x-auto">
                     <table className="w-full border-separate table-fixed" style={{ borderSpacing: 6, minWidth: Math.max(460, 120 + visibleCols.length * 170) }}>
                       <thead>
@@ -1175,6 +1223,76 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
                     </table>
                   </div>
                 )}
+
+                {/* FOCAS Hall: only the sessions booked this day, in time order.
+                    Its own view always shows the strip; All rooms shows it only
+                    when there is something booked or a session to paste. */}
+                {!folded && (() => {
+                  const hallList = hallSessionsOn(day)
+                  const hallView = activeRoom === 'hall'
+                  if (!hallKeys.size || !(hallView || (activeRoom === 'all' && (hallList.length || hallClip)))) return null
+                  const dayOver = new Date(day.getFullYear(), day.getMonth(), day.getDate() + 1) <= new Date()
+                  return (
+                    <div className="border-t border-gray-100 px-4 pb-3 pt-2">
+                      {!hallView && (
+                        <p className="text-[10px] font-bold text-violet-600 uppercase mb-1.5">📣 {hallRooms[0]?.label || 'FOCAS Hall'}</p>
+                      )}
+                      <div className="flex flex-wrap gap-2">
+                        {hallList.map(c => {
+                          const n = (c.allowedStudents || []).length
+                          return (
+                            <div key={c._id} className="relative w-64 rounded-xl border border-violet-200 bg-white shadow-sm pl-3 pr-2.5 py-2">
+                              <span className="absolute left-0 top-2 bottom-2 w-[3px] rounded-r-full bg-violet-500" />
+                              <button type="button" onClick={() => copyHall(c)}
+                                title="Copy this session — then paste it onto any other day"
+                                className="absolute top-1.5 right-1.5 w-5 h-5 flex items-center justify-center rounded-md bg-white/90 border border-gray-200 text-gray-400 hover:text-violet-600 hover:border-violet-300 text-[11px] leading-none">
+                                ⧉
+                              </button>
+                              <button type="button" disabled={c.status !== 'scheduled'}
+                                onClick={() => onEditClass?.(c)}
+                                title={c.status === 'scheduled' ? 'Edit this session' : undefined}
+                                className="block w-full text-left pr-6 disabled:cursor-default">
+                                <p className="flex items-center gap-1.5 text-[11px] font-bold text-violet-700">
+                                  {fmtClock(c.scheduledStart)} – {fmtClock(c.scheduledEnd)}
+                                  {c.status === 'live' && (
+                                    <span className="inline-flex items-center gap-1 rounded-full bg-red-50 border border-red-200 px-1.5 py-px text-[9px] font-bold uppercase text-red-600">
+                                      <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />live
+                                    </span>
+                                  )}
+                                </p>
+                                <p className="mt-0.5 text-[13px] font-semibold text-gray-900 leading-snug break-words">{c.title}</p>
+                                <p className="mt-0.5 text-[11px] text-gray-500 truncate"
+                                  title={`${c.track?.label || ''} · ${c.host?.name || ''}`}>
+                                  {c.track?.label} · {c.host?.name || '—'} · {n ? `👥 ${n}` : 'open to all'}{c.recordingWanted ? ' · ⏺ rec' : ''}
+                                </p>
+                              </button>
+                            </div>
+                          )
+                        })}
+                        {!hallList.length && (
+                          <p className="text-[11px] text-gray-400 italic py-1">No Hall sessions booked.</p>
+                        )}
+                      </div>
+                      {!dayOver && (hallView || hallClip) && (
+                        <div className="flex flex-wrap gap-2 mt-2">
+                          {hallView && (
+                            <button type="button" onClick={() => onBookHall?.({ date: toDateInput(day) })}
+                              className="text-[11px] font-semibold text-violet-600 hover:text-violet-800 px-2.5 py-1 rounded-lg border border-dashed border-violet-200 hover:bg-violet-50">
+                              ＋ Book Hall session
+                            </button>
+                          )}
+                          {hallClip && (
+                            <button type="button" onClick={() => pasteHall(day)}
+                              title={`Paste "${hallClip.fields.title}" onto this day`}
+                              className="text-[11px] font-semibold text-amber-600 hover:text-amber-800 px-2.5 py-1 rounded-lg border border-dashed border-amber-300 hover:bg-amber-50">
+                              📋 Paste “{hallClip.fields.title || 'Hall session'}” here
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })()}
               </div>
             )
             }
@@ -1237,6 +1355,18 @@ export default function SchedulerBoard({ rooms, hosts, classes, onChanged, onSta
             <span className="text-gray-400"> from {clipboard.from}</span> — click 📋 on any slot to paste
           </span>
           <button onClick={() => setClipboard(null)}
+            className="px-2.5 py-1 rounded-lg border border-gray-200 text-gray-500 text-xs font-semibold hover:bg-gray-50">
+            ✕ Clear
+          </button>
+        </div>
+      )}
+      {hallClip && (
+        <div className="fixed bottom-5 left-6 z-40 bg-white rounded-2xl shadow-xl border border-violet-200 px-4 py-3 flex items-center gap-3">
+          <span className="text-xs text-gray-700">
+            ⧉ Hall session <b>“{hallClip.fields.title || 'untitled'}”</b> copied
+            <span className="text-gray-400"> from {hallClip.from}</span> — click 📋 on any day to paste
+          </span>
+          <button onClick={() => setHallClip(null)}
             className="px-2.5 py-1 rounded-lg border border-gray-200 text-gray-500 text-xs font-semibold hover:bg-gray-50">
             ✕ Clear
           </button>

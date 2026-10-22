@@ -409,10 +409,15 @@ export default function LiveClassesPage() {
       <div className={tab === 'board' ? '' : 'hidden'}>
         <SchedulerBoard
           rooms={classRooms}
+          hallRooms={hallRooms}
           hosts={hosts}
           classes={classes || []}
           onChanged={() => Promise.all([load(), loadTopology()])}
           onStagedCount={setStagedCount}
+          // Booked/pasted from the board's FOCAS Hall view → stay on the board
+          // after saving, so the same copy can be pasted onto the next day.
+          onBookHall={(prefill) => setHallForm({ ...newHallForm(hallRooms), ...prefill, fromBoard: true })}
+          onEditClass={openEdit}
         />
       </div>
 
@@ -701,7 +706,12 @@ export default function LiveClassesPage() {
           hallRooms={hallRooms}
           hosts={hosts}
           sessionTypes={sessionTypes}
-          onSaved={async () => { setHallForm(null); setTab('list'); await Promise.all([load(), loadTopology()]) }}
+          onSaved={async () => {
+            const fromBoard = hallForm.fromBoard
+            setHallForm(null)
+            if (!fromBoard) setTab('list')
+            await Promise.all([load(), loadTopology()])
+          }}
         />
       )}
 
