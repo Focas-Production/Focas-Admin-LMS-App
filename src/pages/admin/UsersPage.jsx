@@ -1274,6 +1274,8 @@ export default function UsersPage() {
   const [page,    setPage]    = useState(1)
   const [pageSize, setPageSize] = useState(20)
   const [search,  setSearch]  = useState('')
+  const [role,    setRole]    = useState('')
+  const [counts,  setCounts]  = useState(null)
   const [loading, setLoading] = useState(true)
   const [grantUser,    setGrantUser]    = useState(null)
   const [accessUser,   setAccessUser]   = useState(null)
@@ -1287,14 +1289,14 @@ export default function UsersPage() {
 
   function load() {
     setLoading(true)
-    const query = new URLSearchParams({ page, limit: pageSize, ...(search && { search }) })
+    const query = new URLSearchParams({ page, limit: pageSize, ...(search && { search }), ...(role && { role }) })
     apiFetch(`/api/admin/users?${query}`)
-      .then(d => { setUsers(d.users || []); setTotal(d.pagination?.total || 0) })
+      .then(d => { setUsers(d.users || []); setTotal(d.pagination?.total || 0); setCounts(d.counts || null) })
       .catch(() => {})
       .finally(() => setLoading(false))
   }
 
-  useEffect(() => { load() }, [page, pageSize, search])
+  useEffect(() => { load() }, [page, pageSize, search, role])
   // AdminLayout's <main> is the scroller — jump back to the top on a new page.
   useEffect(() => { document.querySelector('main')?.scrollTo({ top: 0 }) }, [page, pageSize])
 
@@ -1305,7 +1307,7 @@ export default function UsersPage() {
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Users</h1>
-          <p className="text-gray-400 text-sm mt-0.5">{total} total users</p>
+          <p className="text-gray-400 text-sm mt-0.5">{total} {role ? `${role}${total !== 1 ? 's' : ''}` : 'total users'}</p>
         </div>
         <div className="flex items-center gap-3">
           <div className="relative">
@@ -1323,6 +1325,21 @@ export default function UsersPage() {
             Add User
           </button>
         </div>
+      </div>
+
+      <div className="flex flex-wrap gap-2 mb-4">
+        {[
+          { key: '',        label: 'All users', count: counts?.all },
+          { key: 'admin',   label: 'Admins',    count: counts?.admin },
+          { key: 'mentor',  label: 'Mentors',   count: counts?.mentor },
+          { key: 'student', label: 'Students',  count: counts?.student },
+        ].map(o => (
+          <button key={o.key || 'all'} onClick={() => { setRole(o.key); setPage(1) }}
+            className={`text-xs font-semibold px-3 py-1.5 rounded-lg transition-colors ${
+              role === o.key ? 'bg-indigo-600 text-white' : 'bg-white text-gray-600 border border-gray-200 hover:bg-gray-50'}`}>
+            {o.label}{o.count != null ? ` · ${o.count}` : ''}
+          </button>
+        ))}
       </div>
 
       <div className="bg-white rounded-2xl shadow-sm overflow-x-auto">
