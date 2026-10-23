@@ -8,6 +8,7 @@ import AdminDashboard from '../pages/admin/AdminDashboard'
 import ActionCenterPage from '../pages/admin/ActionCenterPage'
 import UsersPage from '../pages/admin/UsersPage'
 import StudentProgressPage from '../pages/admin/StudentProgressPage'
+import ProgressListPage from '../pages/admin/ProgressListPage'
 import ProductsPage from '../pages/admin/ProductsPage'
 import PurchasesPage from '../pages/admin/PurchasesPage'
 import ContentPage from '../pages/admin/ContentPage'
@@ -36,6 +37,7 @@ export default function AppRouter() {
         <Route path="sales"    element={<AdminDashboard />} />
         <Route path="users"    element={<UsersPage />} />
         <Route path="users/:id/progress" element={<StudentProgressPage />} />
+        <Route path="progress"  element={<ProgressListPage />} />
         <Route path="products"  element={<ProductsPage />} />
         <Route path="purchases" element={<PurchasesPage />} />
         <Route path="content"   element={<ContentPage />} />
