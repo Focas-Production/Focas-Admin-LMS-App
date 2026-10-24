@@ -395,7 +395,9 @@ function CourseModal({ user, onClose, onUpdated }) {
   // A stored attempt that has slipped out of the rolling window (or into the
   // past) stays listed so reopening the modal doesn't silently drop it.
   const attemptOptions = (() => {
-    const opts = upcomingAttempts(level)
+    // The last 12 months too: correcting a batch to a sitting already held
+    // (e.g. the Foundation exam a student passed) is a normal fix.
+    const opts = upcomingAttempts(level, 20, 12)
     if (attempt && !opts.includes(attempt)) opts.unshift(attempt)
     return opts
   })()
@@ -489,6 +491,11 @@ function CourseModal({ user, onClose, onUpdated }) {
                   <Choice key={a} active={attempt === a} onClick={() => setAttempt(attempt === a ? '' : a)}>{a}</Choice>
                 ))}
               </div>
+              {/* Editing here corrects the current batch; it never resets progress. */}
+              <p className="text-[11px] text-gray-400 mt-1.5">
+                This only corrects the current batch — progress stays. For a student starting again (failed, re-joined),
+                use <b>Start new attempt</b> on their Progress page.
+              </p>
             </div>
           )}
 

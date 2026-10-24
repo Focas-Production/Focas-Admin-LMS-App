@@ -196,7 +196,8 @@ export default function ChapterProgressPage() {
         <div>
           <h1 className="text-xl font-bold text-gray-900">Chapter Progress</h1>
           <p className="text-xs text-gray-400 mt-0.5">
-            Students × chapters for one paper. Click a cell: blank → ✓ completed → ✗ absent → blank. Saves at once.
+            Students × chapters for one paper, each student's current batch. Click a cell: blank → ✓ completed → ✗ absent → blank. Saves at once.
+            Earlier batches are on the student's Progress page.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2 ml-auto">

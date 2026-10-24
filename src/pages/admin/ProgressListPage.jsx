@@ -45,6 +45,10 @@ const SHOW_OPTIONS = [
   { key: 'classes', label: 'Attending classes' },
   { key: 'tests',   label: 'Writing tests' },
   { key: 'none',    label: 'No activity yet' },
+  // Only offered while some student actually has that label (counts > 0).
+  { key: 'group-completed',  count: 'groupCompleted',  label: 'Group completed',  optional: true },
+  { key: 'level-completed',  count: 'levelCompleted',  label: 'Level completed',  optional: true },
+  { key: 'course-completed', count: 'courseCompleted', label: 'Course completed', optional: true },
 ]
 
 const COLUMNS = [
@@ -139,13 +143,18 @@ export default function ProgressListPage() {
       </div>
 
       <div className="flex flex-wrap gap-2 mb-4">
-        {SHOW_OPTIONS.map(o => (
-          <button key={o.key} onClick={() => { setShow(o.key); setPage(1) }}
-            className={`text-xs font-semibold px-3 py-1.5 rounded-lg transition-colors ${
-              show === o.key ? 'bg-indigo-600 text-white' : 'bg-white text-gray-600 border border-gray-200 hover:bg-gray-50'}`}>
-            {o.label}{counts ? ` · ${counts[o.key]}` : ''}
-          </button>
-        ))}
+        {SHOW_OPTIONS
+          // A completion chip appears only when someone has that label — or while it is the active filter.
+          .filter(o => !o.optional || show === o.key || (counts?.[o.count] || 0) > 0)
+          .map(o => (
+            <button key={o.key} onClick={() => { setShow(o.key); setPage(1) }}
+              className={`text-xs font-semibold px-3 py-1.5 rounded-lg transition-colors ${
+                show === o.key ? (o.optional ? 'bg-emerald-600 text-white' : 'bg-indigo-600 text-white')
+                  : o.optional ? 'bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100'
+                  : 'bg-white text-gray-600 border border-gray-200 hover:bg-gray-50'}`}>
+              {o.optional && '🎓 '}{o.label}{counts ? ` · ${counts[o.count || o.key] ?? 0}` : ''}
+            </button>
+          ))}
       </div>
 
       {error && <p className="mb-4 text-sm text-rose-600 bg-rose-50 rounded-xl px-4 py-3">{error}</p>}
@@ -189,7 +198,14 @@ export default function ProgressListPage() {
                         {s.name?.[0]?.toUpperCase() || '?'}
                       </div>
                       <div className="min-w-0">
-                        <p className="font-medium text-gray-900">{s.name || '—'}</p>
+                        <p className="font-medium text-gray-900">
+                          {s.name || '—'}
+                          {s.completion && (
+                            <span className="ml-2 text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-emerald-100 text-emerald-700 uppercase tracking-wide">
+                              🎓 {s.completion.label}
+                            </span>
+                          )}
+                        </p>
                         <p className="text-xs text-gray-400">{s.phoneNumber || '—'}</p>
                       </div>
                     </div>

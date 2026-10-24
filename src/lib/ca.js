@@ -29,15 +29,17 @@ const MONTH_INDEX = { Jan: 0, May: 4, Sep: 8, Nov: 10 }
 // Oct 2026) that is Jan 2027 … May 2028 for Intermediate and Nov 2026 /
 // May 2027 / Nov 2027 / May 2028 for Final — the window rolls forward on its
 // own, so nobody has to come back and add next year's dates.
-export function upcomingAttempts(level, monthsAhead = 20) {
+// monthsBack > 0 also lists recent past sittings (oldest first) — for
+// correcting a batch to the sitting a student actually sat or passed.
+export function upcomingAttempts(level, monthsAhead = 20, monthsBack = 0) {
   const months = ATTEMPT_MONTHS[level]
   if (!months) return []
   const now = new Date()
   const out = []
-  for (let year = now.getFullYear(); year <= now.getFullYear() + 2; year++) {
+  for (let year = now.getFullYear() - 2; year <= now.getFullYear() + 2; year++) {
     for (const m of months) {
       const away = (year - now.getFullYear()) * 12 + MONTH_INDEX[m] - now.getMonth()
-      if (away >= 0 && away <= monthsAhead) out.push(`${m} ${year}`)
+      if (away >= -monthsBack && away <= monthsAhead) out.push(`${m} ${year}`)
     }
   }
   return out
