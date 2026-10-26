@@ -80,6 +80,14 @@ export default function LiveClassesPage() {
   const [edit, setEdit]       = useState(null)        // { cls, hostUserId, subjectId, chapterId, unitId, saving, error }
   const [pastOpen, setPastOpen] = useState(false)     // history section folded by default
   const [listRoom, setListRoom] = useState('all')     // room filter over the whole list
+  const [listHost, setListHost] = useState('all')     // mentor filter over the whole list
+  const [listStatus, setListStatus] = useState('all') // 'all' | 'upcoming' | 'ended' | 'cancelled'
+  const [filterCounts, setFilterCounts] = useState(null) // { total, hosts[] } from the server, room-scoped
+  // Ended/cancelled classes come from the server page by page: the main list is
+  // capped at the newest 200, so filtering history from it would drop old classes.
+  const [history, setHistory] = useState({ key: '', items: [], total: 0, page: 0, pages: 1, loading: false, error: '' })
+  const historySeq = useRef(0)                        // drops replies to superseded filters
+  const [classTotal, setClassTotal] = useState(null)  // every class ever, for the tab label (the list itself is capped)
   const [sessionTypes, setSessionTypes] = useState([]) // FOCAS Hall session types, from topology
   const [hallForm, setHallForm] = useState(null)      // "Schedule Hall session" modal state
 
@@ -99,18 +107,92 @@ export default function LiveClassesPage() {
   // right now, then what is coming next (soonest first, broken by day), and
   // finished/cancelled classes parked in their own section at the bottom.
   // The server's own order is not relied on — the sort is explicit here.
+  // Mentor picker: everyone who has hosted or will host a class in the chosen
+  // room, with their counts. A picked mentor with nothing in this room stays
+  // listed (at zero) so the selection never silently vanishes.
+  const hostChoices = useMemo(() => {
+    const list = filterCounts?.hosts || []
+    if (listHost === 'all' || list.some(h => String(h.id) === listHost)) return list
+    const known = hosts.find(h => String(h.id) === listHost)
+    return [...list, { id: listHost, name: known?.name || 'Selected mentor', upcoming: 0, ended: 0, cancelled: 0 }]
+  }, [filterCounts, hosts, listHost])
+
+  // Counts on the status chips — for the picked mentor, or everyone.
+  const statusCounts = useMemo(() => {
+    if (!filterCounts) return null
+    if (listHost === 'all') return filterCounts.total
+    return hostChoices.find(h => String(h.id) === listHost) || { upcoming: 0, ended: 0, cancelled: 0 }
+  }, [filterCounts, hostChoices, listHost])
+
+  const showAhead = listStatus === 'all' || listStatus === 'upcoming'
+  const showHistory = listStatus !== 'upcoming'
+  // Picking Ended or Cancelled is asking to see them — no fold in the way.
+  const historyOpen = listStatus === 'ended' || listStatus === 'cancelled' || pastOpen
+  const historyStatus = listStatus === 'ended' || listStatus === 'cancelled' ? listStatus : 'past'
+  const historyKey = `${historyStatus}|${listHost}|${listRoom}`
+  const filtersActive = listRoom !== 'all' || listHost !== 'all' || listStatus !== 'all'
+
+  const loadHistory = useCallback(async (page) => {
+    const seq = ++historySeq.current
+    // Same filters → keep the rows on screen while refreshing; new filters → start clean.
+    setHistory(h => h.key === historyKey
+      ? { ...h, loading: true, error: '' }
+      : { key: historyKey, items: [], total: 0, page: 0, pages: 1, loading: true, error: '' })
+    const qs = new URLSearchParams({ status: historyStatus, page: String(page), limit: '50' })
+    if (listHost !== 'all') qs.set('hostId', listHost)
+    if (listRoom !== 'all') qs.set('room', listRoom)
+    try {
+      const d = await apiFetch(`/api/live-classes/manage/history?${qs}`)
+      if (seq !== historySeq.current) return
+      setHistory(h => {
+        // A refresh of page 1 replaces; "Show more" appends without duplicating
+        // a class that shifted pages while the admin was reading.
+        const seen = new Set(page === 1 ? [] : h.items.map(c => c._id))
+        const items = page === 1 ? d.classes : [...h.items, ...d.classes.filter(c => !seen.has(c._id))]
+        return { key: historyKey, items, total: d.total, page: d.page, pages: d.pages, loading: false, error: '' }
+      })
+    } catch (err) {
+      if (seq !== historySeq.current) return
+      setHistory(h => ({ ...h, loading: false, error: err.message || 'Could not load past classes' }))
+    }
+  }, [historyKey, historyStatus, listHost, listRoom])
+
+  const loadFilterCounts = useCallback(async () => {
+    try {
+      const qs = listRoom !== 'all' ? `?room=${encodeURIComponent(listRoom)}` : ''
+      const d = await apiFetch(`/api/live-classes/manage/filter-counts${qs}`)
+      setFilterCounts(d)
+      if (listRoom === 'all') setClassTotal(d.total.upcoming + d.total.ended + d.total.cancelled)
+    } catch {
+      setFilterCounts(null)   // chips fall back to no numbers; the list still works
+    }
+  }, [listRoom])
+
+  // Counts follow the room filter and every change to the classes (cancel, end, edit).
+  useEffect(() => {
+    if (classes === null) return
+    loadFilterCounts()
+  }, [classes, loadFilterCounts])
+
+  // History reloads from page 1 whenever its filters change, it is unfolded, or
+  // the classes change underneath it — only while it is actually on screen.
+  useEffect(() => {
+    if (tab !== 'list' || classes === null || !showHistory || !historyOpen) return
+    loadHistory(1)
+  }, [tab, classes, showHistory, historyOpen, loadHistory])
+
   const listGroups = useMemo(() => {
-    // The room filter governs EVERY section, not just upcoming — asking for
-    // Room 2 and still being shown Room 1's live class would be a lie.
-    const all = (classes || []).filter(c => listRoom === 'all' || c.room?.key === listRoom)
+    // Room and mentor filters govern EVERY section, not just upcoming — asking
+    // for Room 2 and still being shown Room 1's live class would be a lie.
+    const all = (classes || []).filter(c =>
+      (listRoom === 'all' || c.room?.key === listRoom) &&
+      (listHost === 'all' || String(c.host?.userId) === listHost))
     const byStart = (a, b) => new Date(a.scheduledStart) - new Date(b.scheduledStart)
 
-    const live = all.filter(c => c.status === 'live').sort(byStart)
-    const upcoming = all.filter(c => c.status === 'scheduled').sort(byStart)
-    // History reads newest first — the most recent class is the one being asked about.
-    const past = all
-      .filter(c => c.status === 'ended' || c.status === 'cancelled')
-      .sort((a, b) => new Date(b.scheduledStart) - new Date(a.scheduledStart))
+    const live = showAhead ? all.filter(c => c.status === 'live').sort(byStart) : []
+    const upcoming = showAhead ? all.filter(c => c.status === 'scheduled').sort(byStart) : []
+    // History is server-paged, newest first; ignore a reply for older filters.
+    const past = history.key === historyKey ? history.items : []
 
     // Upcoming is split into day runs so "this evening" and "tomorrow" are
     // readable without checking each date.
@@ -123,30 +205,52 @@ export default function LiveClassesPage() {
       days[days.length - 1].items.push(c)
     }
     return { live, upcoming, upcomingDays: days, past }
-  }, [classes, listRoom])
+  }, [classes, listRoom, listHost, showAhead, history, historyKey])
 
   // Flattened into section headers + rows so one table keeps every column aligned.
   const listRows = useMemo(() => {
     const { live, upcoming, upcomingDays, past } = listGroups
     const rows = []
-    if (live.length) {
-      rows.push({ kind: 'section', key: 'sec-live', label: 'Happening now', count: live.length, tone: 'live' })
-      live.forEach(c => rows.push({ kind: 'class', cls: c }))
+    if (showAhead) {
+      if (live.length) {
+        rows.push({ kind: 'section', key: 'sec-live', label: 'Happening now', count: live.length, tone: 'live' })
+        live.forEach(c => rows.push({ kind: 'class', cls: c }))
+      }
+      // Always rendered, even at zero, so an emptied filter reads as "nothing" rather than broken.
+      rows.push({ kind: 'section', key: 'sec-up', label: 'Upcoming', count: upcoming.length })
+      upcomingDays.forEach(d => {
+        rows.push({ kind: 'day', key: `day-${d.key}`, label: d.label, count: d.items.length })
+        d.items.forEach(c => rows.push({ kind: 'class', cls: c }))
+      })
+      if (!upcoming.length) rows.push({ kind: 'empty', key: 'up-none', text: 'Nothing scheduled ahead' })
     }
-    // Always rendered, even at zero — it carries the room filter, which must stay
-    // reachable to undo a filter that emptied the list.
-    rows.push({ kind: 'section', key: 'sec-up', label: 'Upcoming', count: upcoming.length, filter: true })
-    upcomingDays.forEach(d => {
-      rows.push({ kind: 'day', key: `day-${d.key}`, label: d.label, count: d.items.length })
-      d.items.forEach(c => rows.push({ kind: 'class', cls: c }))
-    })
-    if (!upcoming.length) rows.push({ kind: 'empty', key: 'up-none' })
-    if (past.length) {
-      rows.push({ kind: 'section', key: 'sec-past', label: 'Ended & cancelled', count: past.length, fold: true })
-      if (pastOpen) past.forEach(c => rows.push({ kind: 'class', cls: c }))
+    if (showHistory) {
+      const label = historyStatus === 'ended' ? 'Ended' : historyStatus === 'cancelled' ? 'Cancelled' : 'Ended & cancelled'
+      // Before the first page arrives (or while folded) the count comes from the
+      // counts endpoint, so the number is right without loading every row.
+      const loaded = history.key === historyKey && history.page > 0
+      const count = loaded ? history.total
+        : statusCounts ? (historyStatus === 'ended' ? statusCounts.ended
+          : historyStatus === 'cancelled' ? statusCounts.cancelled
+          : statusCounts.ended + statusCounts.cancelled)
+        : null
+      rows.push({ kind: 'section', key: 'sec-past', label, count, fold: historyStatus === 'past' })
+      if (historyOpen) {
+        past.forEach(c => rows.push({ kind: 'class', cls: c }))
+        if (history.error && history.key === historyKey) rows.push({ kind: 'history-error', key: 'past-err' })
+        else if (history.loading && !past.length) rows.push({ kind: 'note', key: 'past-loading', text: 'Loading…' })
+        else if (loaded && !past.length) rows.push({ kind: 'empty', key: 'past-none', text: `No ${label.toLowerCase()} classes` })
+        if (loaded && !history.error && history.page < history.pages) rows.push({ kind: 'more', key: 'past-more' })
+      }
     }
     return rows
-  }, [listGroups, pastOpen])
+  }, [listGroups, showAhead, showHistory, historyOpen, historyStatus, history, historyKey, statusCounts])
+
+  const hostLabel = listHost === 'all' ? '' : (hostChoices.find(h => String(h.id) === listHost)?.name || 'this mentor')
+  const roomLabel = listRoom === 'all' ? '' : (roomChoices.find(r => r.key === listRoom)?.label || 'this room')
+  // "Nothing scheduled ahead for Keerthana in Room 2."
+  const emptySuffix = `${hostLabel ? ` for ${hostLabel}` : ''}${roomLabel ? ` in ${roomLabel}` : ''}.`
+  const clearFilters = () => { setListRoom('all'); setListHost('all'); setListStatus('all') }
 
   const copyTrackLink = async (roomKey, trackKey) => {
     const url = trackUrl(roomKey, trackKey)
@@ -196,9 +300,18 @@ export default function LiveClassesPage() {
     const ids = (classes || []).map(c => c._id)
     if (!ids.length) return
     apiFetch(`/api/live-classes/manage/submission-counts?ids=${ids.join(',')}`)
-      .then(d => setSubCounts(d.counts || {}))
+      .then(d => setSubCounts(s => ({ ...s, ...(d.counts || {}) })))
       .catch(() => {})
   }, [classes])
+
+  // …and for history pages, which can reach past the main list's 200 classes.
+  useEffect(() => {
+    const ids = history.items.map(c => c._id)
+    if (!ids.length) return
+    apiFetch(`/api/live-classes/manage/submission-counts?ids=${ids.join(',')}`)
+      .then(d => setSubCounts(s => ({ ...s, ...(d.counts || {}) })))
+      .catch(() => {})
+  }, [history.items])
 
   const act = async (cls, action) => {
     const verb = action === 'end' ? 'End this class for everyone?' : 'Cancel this scheduled class?'
@@ -371,7 +484,7 @@ export default function LiveClassesPage() {
       <div className="flex flex-wrap gap-1 mb-4">
         {[
           ['board', `📅 Scheduler${stagedCount ? ` · ${stagedCount} staged` : ''}`],
-          ['list', `📋 All classes${classes?.length ? ` (${classes.length})` : ''}`],
+          ['list', `📋 All classes${classTotal != null ? ` (${classTotal})` : ''}`],
         ].map(([key, label]) => (
           <button key={key} onClick={() => setTab(key)}
             className={`px-4 py-2 rounded-xl text-sm font-semibold transition-colors ${
@@ -395,7 +508,7 @@ export default function LiveClassesPage() {
           doesn't get in the way (position remembered per browser). */}
       <DraggableFab
         label={tab === 'board'
-          ? `📋 All classes${classes?.length ? ` (${classes.length})` : ''}`
+          ? `📋 All classes${classTotal != null ? ` (${classTotal})` : ''}`
           : `📅 Scheduler${stagedCount ? ` · ${stagedCount} staged` : ''}`}
         onActivate={() => {
           setTab(tab === 'board' ? 'list' : 'board')
@@ -428,6 +541,63 @@ export default function LiveClassesPage() {
         <div className="bg-white rounded-2xl shadow-sm p-8 text-center text-gray-400 text-sm">No classes scheduled yet.</div>
       ) : (
         <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
+          {/* Filters — mentor, status and room narrow every section below. */}
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3 border-b border-gray-100">
+            <label className="flex items-center gap-2 text-xs font-semibold text-gray-500">
+              Mentor
+              <select value={listHost} onChange={e => setListHost(e.target.value)}
+                className={`text-sm rounded-lg border px-2.5 py-1.5 bg-white max-w-[16rem] ${
+                  listHost !== 'all' ? 'border-indigo-400 text-indigo-700 font-semibold' : 'border-gray-200 text-gray-700'}`}>
+                <option value="all">All mentors</option>
+                {hostChoices.map(h => (
+                  <option key={h.id} value={String(h.id)}>
+                    {h.name || 'Unnamed'} ({h.upcoming + h.ended + h.cancelled})
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <span className="inline-flex flex-wrap bg-gray-50 border border-gray-200 rounded-lg p-0.5" role="group" aria-label="Status">
+              {[
+                ['all', 'All', statusCounts && statusCounts.upcoming + statusCounts.ended + statusCounts.cancelled],
+                ['upcoming', 'Upcoming', statusCounts?.upcoming],
+                ['ended', 'Ended', statusCounts?.ended],
+                ['cancelled', 'Cancelled', statusCounts?.cancelled],
+              ].map(([key, label, n]) => (
+                <button key={key} type="button" onClick={() => setListStatus(key)} aria-pressed={listStatus === key}
+                  className={`px-2.5 py-1 rounded-md text-xs font-semibold transition-colors ${
+                    listStatus === key ? 'bg-indigo-600 text-white' : 'text-gray-500 hover:text-indigo-600'}`}>
+                  {label}
+                  {n != null && (
+                    <span className={`ml-1.5 text-[10px] font-bold px-1.5 py-0.5 rounded-full ${
+                      listStatus === key ? 'bg-white/20 text-white'
+                      : key === 'cancelled' ? 'bg-amber-100 text-amber-700' : 'bg-gray-200 text-gray-600'}`}>
+                      {n}
+                    </span>
+                  )}
+                </button>
+              ))}
+            </span>
+
+            {roomChoices.length > 1 && (
+              <span className="inline-flex flex-wrap bg-gray-50 border border-gray-200 rounded-lg p-0.5" role="group" aria-label="Room">
+                {roomChoices.map(opt => (
+                  <button key={opt.key} type="button" onClick={() => setListRoom(opt.key)} aria-pressed={listRoom === opt.key}
+                    className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition-colors ${
+                      listRoom === opt.key ? 'bg-indigo-600 text-white' : 'text-gray-500 hover:text-indigo-600'}`}>
+                    {opt.label}
+                  </button>
+                ))}
+              </span>
+            )}
+
+            {filtersActive && (
+              <button type="button" onClick={clearFilters}
+                className="text-xs font-semibold text-gray-400 hover:text-indigo-600 underline underline-offset-2">
+                Clear filters
+              </button>
+            )}
+          </div>
           <table className="w-full text-sm">
             <thead className="bg-gray-50 text-gray-500 text-xs uppercase">
               <tr>
@@ -451,47 +621,51 @@ export default function LiveClassesPage() {
                           className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-wider text-gray-500 hover:text-indigo-600">
                           <span className="text-gray-400">{pastOpen ? '▾' : '▸'}</span>
                           {row.label}
-                          <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-gray-200 text-gray-600 normal-case tracking-normal">
-                            {row.count}
-                          </span>
+                          {row.count != null && (
+                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-gray-200 text-gray-600 normal-case tracking-normal">
+                              {row.count}
+                            </span>
+                          )}
                         </button>
                       ) : (
-                        <div className="flex items-center justify-between gap-3">
-                          <span className={`flex items-center gap-2 text-[11px] font-bold uppercase tracking-wider ${
-                            row.tone === 'live' ? 'text-red-600' : 'text-indigo-600'}`}>
-                            {row.tone === 'live' && <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />}
-                            {row.label}
+                        <span className={`flex items-center gap-2 text-[11px] font-bold uppercase tracking-wider ${
+                          row.tone === 'live' ? 'text-red-600' : 'text-indigo-600'}`}>
+                          {row.tone === 'live' && <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />}
+                          {row.label}
+                          {row.count != null && (
                             <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full normal-case tracking-normal ${
                               row.tone === 'live' ? 'bg-red-100 text-red-700' : 'bg-indigo-100 text-indigo-700'}`}>
                               {row.count}
                             </span>
-                          </span>
-                          {/* Room filter — sits here but governs every section below AND above. */}
-                          {row.filter && roomChoices.length > 1 && (
-                            <span className="inline-flex bg-white border border-gray-200 rounded-lg p-0.5 shadow-sm">
-                              {roomChoices.map(opt => (
-                                <button key={opt.key} type="button" onClick={() => setListRoom(opt.key)}
-                                  title={`Show ${opt.label} in every section`}
-                                  className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition-colors ${
-                                    listRoom === opt.key
-                                      ? 'bg-indigo-600 text-white'
-                                      : 'text-gray-500 hover:text-indigo-600'}`}>
-                                  {opt.label}
-                                </button>
-                              ))}
-                            </span>
                           )}
-                        </div>
+                        </span>
                       )}
                     </td>
                   </tr>
                 )
-                if (row.kind === 'empty') return (
+                if (row.kind === 'empty' || row.kind === 'note') return (
                   <tr key={row.key}>
                     <td colSpan={7} className="px-4 py-6 text-center text-sm text-gray-400">
-                      {listRoom === 'all'
-                        ? 'Nothing scheduled ahead.'
-                        : `Nothing scheduled ahead in ${roomChoices.find(r => r.key === listRoom)?.label || 'this room'}.`}
+                      {row.kind === 'empty' ? `${row.text}${emptySuffix}` : row.text}
+                    </td>
+                  </tr>
+                )
+                if (row.kind === 'history-error') return (
+                  <tr key={row.key}>
+                    <td colSpan={7} className="px-4 py-4 text-center text-sm text-red-500">
+                      {history.error}{' '}
+                      <button type="button" onClick={() => loadHistory(Math.max(1, history.page + 1))}
+                        className="font-semibold underline underline-offset-2 hover:text-red-700">Try again</button>
+                    </td>
+                  </tr>
+                )
+                if (row.kind === 'more') return (
+                  <tr key={row.key}>
+                    <td colSpan={7} className="px-4 py-3 text-center">
+                      <button type="button" disabled={history.loading} onClick={() => loadHistory(history.page + 1)}
+                        className="px-4 py-1.5 rounded-lg border border-gray-200 text-gray-600 text-xs font-semibold hover:bg-gray-50 disabled:opacity-50">
+                        {history.loading ? 'Loading…' : `Show more (${history.items.length} of ${history.total})`}
+                      </button>
                     </td>
                   </tr>
                 )
