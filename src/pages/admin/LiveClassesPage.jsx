@@ -440,7 +440,9 @@ export default function LiveClassesPage() {
   }
 
   return (
-    <div className="p-6 md:p-8 max-w-screen-2xl mx-auto">
+    // Extra bottom room so the floating switcher never sits on the list's last
+    // row ("Show more", the final class's actions) once scrolled to the end.
+    <div className="p-6 md:p-8 pb-24 md:pb-24 max-w-screen-2xl mx-auto">
       <h1 className="text-2xl font-bold text-gray-900 mb-1">Live Classes</h1>
       <p className="text-gray-500 text-sm mb-6">Set a slot's mentor &amp; chapter, drag students into it, then confirm everything once with Review &amp; save.</p>
 
