@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { apiFetch, saveWithClashCheck } from '../../api'
 import AttendanceModal from '../../components/AttendanceModal'
 import SubmissionsModal from '../../components/SubmissionsModal'
@@ -73,6 +74,17 @@ export default function LiveClassesPage() {
   const [error, setError]     = useState('')
   const [attendance, setAttendance] = useState(null)  // { title, roster, class } modal
   const [submissions, setSubmissions] = useState(null) // { id, title } review modal
+  // ?submissions=<classId> opens that class's review modal straight away —
+  // the Action Center's "Class work waiting for review" rows link here.
+  const [searchParams, setSearchParams] = useSearchParams()
+  useEffect(() => {
+    const id = searchParams.get('submissions')
+    if (!id) return
+    setSubmissions({ id, title: searchParams.get('title') || 'Class submissions' })
+    const next = new URLSearchParams(searchParams)
+    next.delete('submissions'); next.delete('title')
+    setSearchParams(next, { replace: true })
+  }, [searchParams, setSearchParams])
   const [subCounts, setSubCounts] = useState({})       // classId → { total, pending }
   const [copied, setCopied]   = useState('')          // "roomKey/trackKey" just copied
   const [allot, setAllot]     = useState(null)        // { cls, students, loading, saving } edit modal
