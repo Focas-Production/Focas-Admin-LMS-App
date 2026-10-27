@@ -14,9 +14,11 @@ import { useState, useEffect, useMemo, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import { apiFetch } from '../../api'
 import { groupLabel } from '../../lib/ca'
+import { usePrograms, programNames, matchesProgram, NO_PROGRAM } from '../../lib/programs'
 
 const SUBJECT_KEY = 'admin-chapter-progress-subject'
 const ATTEMPT_KEY = 'admin-chapter-progress-attempt'
+const PROGRAM_KEY = 'admin-chapter-progress-program'
 // Filter value for students with no attempt set yet.
 const NO_ATTEMPT = '__none__'
 
@@ -80,6 +82,10 @@ export default function ChapterProgressPage() {
   // Batch = the student's attempt ("Jan 2027"); '' shows every batch.
   const [attempt, setAttempt] = useState(() => { try { return localStorage.getItem(ATTEMPT_KEY) || '' } catch { return '' } })
   useEffect(() => { try { localStorage.setItem(ATTEMPT_KEY, attempt) } catch { /* private mode */ } }, [attempt])
+  // Program (Class / Workout Batch / …): a program key, NO_PROGRAM, or '' for all.
+  const programs = usePrograms()
+  const [program, setProgram] = useState(() => { try { return localStorage.getItem(PROGRAM_KEY) || '' } catch { return '' } })
+  useEffect(() => { try { localStorage.setItem(PROGRAM_KEY, program) } catch { /* private mode */ } }, [program])
 
   // `key` is the subject the held grid belongs to — anything else is loading.
   const [state, setState] = useState({ key: null, grid: null, error: '' })
@@ -166,6 +172,7 @@ export default function ChapterProgressPage() {
   const rows = (grid?.students || [])
     .map((s) => ({ ...s, done: columns.filter((c) => isDone(s.cells[c.key])).length }))
     .filter((s) => !attempt || (attempt === NO_ATTEMPT ? !s.caAttempt : s.caAttempt === attempt))
+    .filter((s) => matchesProgram(s, program))
     .filter((s) => !q || s.name.toLowerCase().includes(q) || s.phoneNumber.includes(q))
     .filter((s) => !onlyPending || s.done < columns.length)
 
@@ -183,6 +190,18 @@ export default function ChapterProgressPage() {
     if (none) list.push({ value: NO_ATTEMPT, label: `No batch set · ${none}` })
     return list
   }, [grid])
+
+  // Every program with how many of this paper's students hold it (a student
+  // in two programs counts in both), then "no program set".
+  const programOptions = useMemo(() => {
+    const list = grid?.students || []
+    const opts = (programs || []).map((p) => ({
+      value: p.key,
+      label: `${p.name}${p.active ? '' : ' (retired)'} · ${list.filter((s) => matchesProgram(s, p.key)).length}`,
+    }))
+    opts.push({ value: NO_PROGRAM, label: `No program set · ${list.filter((s) => matchesProgram(s, NO_PROGRAM)).length}` })
+    return opts
+  }, [grid, programs])
 
   const byLevel = useMemo(() => {
     const m = new Map()
@@ -216,6 +235,10 @@ export default function ChapterProgressPage() {
           <select value={attempt} onChange={(e) => setAttempt(e.target.value)} className={selectCls} title="Batch (attempt)">
             <option value="">All batches{grid ? ` · ${grid.students.length}` : ''}</option>
             {attempts.map((a) => <option key={a.value} value={a.value}>{a.label}</option>)}
+          </select>
+          <select value={program} onChange={(e) => setProgram(e.target.value)} className={selectCls} title="Program">
+            <option value="">All programs</option>
+            {programOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
           </select>
           <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search student or phone…"
             className={`${selectCls} w-52`} />
@@ -294,7 +317,7 @@ export default function ChapterProgressPage() {
                         {s.name || s.phoneNumber}
                       </Link>
                       <p className="text-[10px] text-gray-400 truncate">
-                        {s.phoneNumber}{s.caAttempt ? ` · ${s.caAttempt}` : ''}{s.caGroup ? ` · ${groupLabel(s.caGroup)}` : ''}{!s.enrolled ? ' · not enrolled here' : ''}
+                        {s.phoneNumber}{s.caAttempt ? ` · ${s.caAttempt}` : ''}{s.caGroup ? ` · ${groupLabel(s.caGroup)}` : ''}{programNames(s.programs, programs) ? ` · ${programNames(s.programs, programs)}` : ''}{!s.enrolled ? ' · not enrolled here' : ''}
                       </p>
                     </td>
                     {columns.map((c) => {

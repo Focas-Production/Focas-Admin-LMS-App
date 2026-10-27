@@ -8,6 +8,7 @@ import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { apiFetch } from '../../api'
 import { enrollmentLabel, CA_LEVELS } from '../../lib/ca'
+import { usePrograms, programNames, programFilterOptions } from '../../lib/programs'
 
 function fmtDay(d) {
   if (!d) return '—'
@@ -72,6 +73,8 @@ export default function ProgressListPage() {
   const [level, setLevel]     = useState('')
   const [batch, setBatch]     = useState('')
   const [batches, setBatches] = useState([])
+  const [program, setProgram] = useState('')   // program key | 'none' | '' (any)
+  const programs = usePrograms()
   const [sort, setSort]       = useState({ key: 'joined', dir: 'desc' })
   const [loading, setLoading] = useState(true)
   const [error, setError]     = useState('')
@@ -83,6 +86,7 @@ export default function ProgressListPage() {
       ...(search && { search }),
       ...(level && { level }),
       ...(batch && { batch }),
+      ...(program && { program }),
     })
     apiFetch(`/api/admin/progress-overview?${query}`)
       .then(d => {
@@ -94,7 +98,7 @@ export default function ProgressListPage() {
       })
       .catch(err => setError(err.message))
       .finally(() => setLoading(false))
-  }, [page, pageSize, search, show, level, batch, sort])
+  }, [page, pageSize, search, show, level, batch, program, sort])
 
   // AdminLayout's <main> is the scroller — jump back to the top on a new page.
   useEffect(() => { document.querySelector('main')?.scrollTo({ top: 0 }) }, [page, pageSize])
@@ -130,6 +134,11 @@ export default function ProgressListPage() {
             <option value="">All batches</option>
             {batches.map(b => <option key={b} value={b}>{b}</option>)}
             <option value="none">Batch not set</option>
+          </select>
+          <select value={program} onChange={e => { setProgram(e.target.value); setPage(1) }}
+            className="py-2 px-3 border border-gray-200 rounded-xl text-sm bg-white outline-none focus:ring-2 focus:ring-indigo-500">
+            <option value="">All programs</option>
+            {programFilterOptions(programs).map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
           </select>
           <div className="relative">
             <svg className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -218,6 +227,9 @@ export default function ProgressListPage() {
                       </p>
                     ) : <p className="text-gray-400 text-xs">No course</p>}
                     {enrol && <p className="text-[11px] text-indigo-500 mt-0.5">{enrol}</p>}
+                    {programNames(s.programs, programs) && (
+                      <p className="text-[11px] font-semibold text-amber-700 mt-0.5">{programNames(s.programs, programs)}</p>
+                    )}
                   </td>
                   <td className="px-5 py-3.5 text-gray-500 text-xs whitespace-nowrap">{fmtDay(s.createdAt)}</td>
                   <td className="px-5 py-3.5">

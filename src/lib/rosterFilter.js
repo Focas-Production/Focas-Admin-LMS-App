@@ -8,8 +8,11 @@
 //   enum    → array of option keys
 //   subject → array of subjectId strings (any/all/none of them)
 //   enrolled → { keys, subjectIds }  keys are ENROLMENT_OPTIONS; subjectIds narrow 'subjects'
+//   program → array of program keys ('class', 'workout' — lib/programs.js)
 //   slot    → { slot, days }        days '' = on any day | 'weekdays' | 'weekends'
 //   chapter → { subjectId, chapterId, unitId }   (the operator names the status)
+//
+// Program options come from the server's fixed list, via ctx.programs.
 //
 // Everything here is pure: the async part (where every student stands on a
 // chapter — the /api/admin/syllabus-completion buckets, { done, attended,
@@ -156,6 +159,14 @@ export const FIELD_DEFS = [
     get: s => s.caGroup },
   { key: 'attempt',    label: 'Attempt',         kind: 'enum',
     options: ATTEMPT_OPTIONS, get: s => s.caAttempt },
+  // What they came for. 'is' = holds any of the picked programs, "isn't" =
+  // holds none of them; a student may have several.
+  { key: 'program',    label: 'Program',         kind: 'program',
+    ops: [
+      { key: 'is',      label: 'is any of' },
+      { key: 'isnt',    label: 'is none of' },
+      { key: 'not_set', label: 'is not set' },
+    ] },
   { key: 'enrolledFor', label: 'Enrolled for',   kind: 'enrolled',
     options: ENROLMENT_OPTIONS, ops: ENUM_OPS.filter(o => o.key !== 'not_set') },
   { key: 'subject',    label: 'Studies subject', kind: 'subject',
@@ -199,7 +210,7 @@ export function newCondition(fieldKey = 'name') {
     id: `c${Date.now()}_${nextId++}`,
     field: fieldKey,
     op: ops[0]?.key || 'is',
-    value: def.kind === 'enum' || def.kind === 'subject' ? []
+    value: def.kind === 'enum' || def.kind === 'subject' || def.kind === 'program' ? []
       : def.kind === 'enrolled' ? { keys: [], subjectIds: [] }
       : def.kind === 'slot' ? { slot: '', days: '' }
       : def.kind === 'chapter' ? { subjectId: '', chapterId: '', unitId: '' }
@@ -249,6 +260,8 @@ export function conditionComplete(c) {
       return c.op === 'not_set' || (Array.isArray(c.value) && c.value.length > 0)
     case 'subject':
       return subjectIdsOf(c).length > 0
+    case 'program':
+      return c.op === 'not_set' || (Array.isArray(c.value) && c.value.length > 0)
     case 'enrolled':
       return (c.value?.keys || []).length > 0
     case 'slot':
@@ -338,6 +351,12 @@ export function evalCondition(student, c, ctx) {
       return op === 'any' ? hits > 0
         : op === 'all' ? hits === docs.length
         : hits === 0
+    }
+    case 'program': {
+      const mine = new Set(student.programs || [])
+      if (c.op === 'not_set') return mine.size === 0
+      const hit = c.value.some(k => mine.has(k))
+      return c.op === 'is' ? hit : !hit
     }
     case 'enrolled': {
       const mine = enrolmentOf(student)

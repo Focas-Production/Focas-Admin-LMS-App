@@ -4,6 +4,7 @@ import { apiFetch } from '../../api'
 import { CA_LEVELS, CA_GROUPS, groupLabel, ATTEMPT_MONTHS, upcomingAttempts } from '../../lib/ca'
 import SlotEditorModal from '../../components/SlotEditorModal'
 import { availabilityLabel, hasSlotAvailability } from '../../lib/rosterFilter'
+import { usePrograms, programNames, programFilterOptions } from '../../lib/programs'
 
 function fmtDate(d) {
   if (!d) return '—'
@@ -378,12 +379,44 @@ function CourseModal({ user, onClose, onUpdated }) {
   const [subjects, setSubjects] = useState(null)   // null = loading
   const [saving,  setSaving]  = useState(false)
   const [error,   setError]   = useState('')
+  // Program = what they came for (Class, Workout Batch, …); several allowed.
+  const programs = usePrograms()
+  const [progIds, setProgIds] = useState(() => new Set(user.programs || []))   // program keys
+  const [suggested, setSuggested] = useState([])    // program keys their purchases point at
 
   useEffect(() => {
     apiFetch('/api/admin/subjects')
       .then(d => setSubjects(d.subjects || []))
       .catch(() => setSubjects([]))
-  }, [])
+    apiFetch(`/api/admin/users/${user._id}/program-suggestions`)
+      .then(d => setSuggested(d.suggested || []))
+      .catch(() => setSuggested([]))
+  }, [user._id])
+
+  // Offered programs, plus any retired one this student still holds (so
+  // saving never silently drops it).
+  const programChoices = (programs || []).filter(p => p.active || (user.programs || []).includes(p.key))
+  // Picking a second program is allowed (a class student can also join a
+  // workout batch) but is easy to do by mistake, so it raises a toast. It
+  // never blocks Save.
+  const [toast, setToast] = useState('')
+  const toastTimer = useRef(null)
+  useEffect(() => () => clearTimeout(toastTimer.current), [])
+  const pickPrograms = (next) => {
+    if (next.size > 1 && progIds.size <= 1) {
+      clearTimeout(toastTimer.current)
+      setToast(`${programNames([...next], programs)} both selected — this student will show under each program. Save if that's right.`)
+      toastTimer.current = setTimeout(() => setToast(''), 4000)
+    }
+    if (next.size <= 1) setToast('')
+    setProgIds(next)
+  }
+  const toggleProgram = (id) => {
+    const next = new Set(progIds)
+    if (next.has(id)) next.delete(id); else next.add(id)
+    pickPrograms(next)
+  }
+  const missingSuggestions = suggested.filter(id => !progIds.has(id))
 
   const hasGroups = level === 'Intermediate' || level === 'Final'
   const bySubjects = mode === 'subjects'
@@ -425,6 +458,8 @@ function CourseModal({ user, onClose, onUpdated }) {
           caGroup: bySubjects || !hasGroups ? null : (group || null),
           caSubjects: bySubjects ? [...picked] : [],
           caAttempt: level ? (attempt || null) : null,
+          // Only sent once the list has loaded, so a failed load can't wipe them.
+          ...(programs ? { programs: [...progIds] } : {}),
         }),
       })
       onUpdated?.()
@@ -472,6 +507,32 @@ function CourseModal({ user, onClose, onUpdated }) {
         </div>
 
         <div className="px-5 py-4 space-y-4 overflow-y-auto">
+          {/* What they came for — Class, Workout Batch, … The list is fixed in
+              server code (server/utils/programs.js). */}
+          <div>
+            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Program</p>
+            {programs === null ? (
+              <div className="h-9 w-48 bg-gray-100 rounded-xl animate-pulse" />
+            ) : (
+              <div className="flex flex-wrap gap-2">
+                {programChoices.map(p => (
+                  <Choice key={p.key} active={progIds.has(p.key)} onClick={() => toggleProgram(p.key)}>
+                    {progIds.has(p.key) ? '✓ ' : ''}{p.name}{p.active ? '' : ' (retired)'}
+                  </Choice>
+                ))}
+                {!programChoices.length && <p className="text-sm text-gray-400">Programs could not be loaded.</p>}
+              </div>
+            )}
+            {missingSuggestions.length > 0 && programs && (
+              <p className="text-[11px] text-amber-700 mt-1.5">
+                From purchases: <b>{programNames(missingSuggestions, programs)}</b>{' '}
+                <button onClick={() => pickPrograms(new Set([...progIds, ...missingSuggestions]))}
+                  className="font-semibold text-indigo-600 hover:text-indigo-800 underline">add</button>
+              </p>
+            )}
+            <p className="text-[11px] text-gray-400 mt-1.5">Pick every one that applies. Used to filter students on Live Classes, Chapter Progress and Progress.</p>
+          </div>
+
           <div>
             <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Level</p>
             <div className="flex flex-wrap gap-2">
@@ -564,6 +625,12 @@ function CourseModal({ user, onClose, onUpdated }) {
           </button>
         </div>
       </div>
+      {toast && (
+        <div role="status" onClick={e => e.stopPropagation()}
+          className="fixed top-5 left-1/2 -translate-x-1/2 z-[60] w-[calc(100%-2rem)] max-w-md px-4 py-2.5 rounded-xl shadow-lg text-sm text-center text-white bg-amber-600">
+          {toast}
+        </div>
+      )}
     </div>
   )
 }
@@ -807,6 +874,7 @@ function GrantModal({ user, onClose, onGranted }) {
 }
 
 function UserDetailDrawer({ user, onClose }) {
+  const programs = usePrograms()
   const [purchases, setPurchases] = useState([])
   const [loading,   setLoading]   = useState(true)
 
@@ -897,6 +965,11 @@ function UserDetailDrawer({ user, onClose }) {
                   : user.caLevel
                     ? `${user.caLevel}${user.caGroup ? ` · ${groupLabel(user.caGroup)}` : ''}${user.caAttempt ? ` · ${user.caAttempt}` : ''}`
                     : <span className="text-gray-400">Not set</span>}
+              </Row>
+            )}
+            {!user.isAdmin && !user.isMentor && (
+              <Row label="Program">
+                {programNames(user.programs, programs) || <span className="text-gray-400">Not set</span>}
               </Row>
             )}
             <Row label="Source"><span className="capitalize">{user.source || '—'}</span></Row>
@@ -1282,6 +1355,8 @@ export default function UsersPage() {
   const [pageSize, setPageSize] = useState(20)
   const [search,  setSearch]  = useState('')
   const [role,    setRole]    = useState('')
+  const [program, setProgram] = useState('')   // program key | 'none' | '' (any)
+  const programs = usePrograms()
   const [counts,  setCounts]  = useState(null)
   const [loading, setLoading] = useState(true)
   const [grantUser,    setGrantUser]    = useState(null)
@@ -1296,14 +1371,14 @@ export default function UsersPage() {
 
   function load() {
     setLoading(true)
-    const query = new URLSearchParams({ page, limit: pageSize, ...(search && { search }), ...(role && { role }) })
+    const query = new URLSearchParams({ page, limit: pageSize, ...(search && { search }), ...(role && { role }), ...(program && { program }) })
     apiFetch(`/api/admin/users?${query}`)
       .then(d => { setUsers(d.users || []); setTotal(d.pagination?.total || 0); setCounts(d.counts || null) })
       .catch(() => {})
       .finally(() => setLoading(false))
   }
 
-  useEffect(() => { load() }, [page, pageSize, search, role])
+  useEffect(() => { load() }, [page, pageSize, search, role, program])
   // AdminLayout's <main> is the scroller — jump back to the top on a new page.
   useEffect(() => { document.querySelector('main')?.scrollTo({ top: 0 }) }, [page, pageSize])
 
@@ -1347,6 +1422,13 @@ export default function UsersPage() {
             {o.label}{o.count != null ? ` · ${o.count}` : ''}
           </button>
         ))}
+        {/* Program narrows the list and every chip count above. */}
+        <select value={program} onChange={e => { setProgram(e.target.value); setPage(1) }}
+          className={`text-xs font-semibold px-2.5 py-1.5 rounded-lg border outline-none focus:ring-2 focus:ring-indigo-400 ${
+            program ? 'bg-indigo-50 text-indigo-700 border-indigo-400' : 'bg-white text-gray-600 border-gray-200'}`}>
+          <option value="">Any program</option>
+          {programFilterOptions(programs).map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
       </div>
 
       <div className="bg-white rounded-2xl shadow-sm overflow-x-auto">
@@ -1392,6 +1474,11 @@ export default function UsersPage() {
                     }`}>
                       {u.isAdmin ? 'Admin' : u.isMentor ? 'Mentor' : 'Student'}
                     </span>
+                    {!u.isAdmin && !u.isMentor && programNames(u.programs, programs) && (
+                      <span className="block text-[10px] font-semibold text-amber-700 mt-1">
+                        {programNames(u.programs, programs)}
+                      </span>
+                    )}
                     {!u.isAdmin && !u.isMentor && (u.caLevel || u.caSubjects?.length > 0) && (
                       <span className="block text-[10px] text-indigo-500 mt-1">
                         {u.caLevel}

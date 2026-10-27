@@ -7,6 +7,7 @@ import {
   availabilityLabel, hasSlotAvailability, isAvailableFor,
 } from '../lib/rosterFilter'
 import SlotEditorModal from './SlotEditorModal'
+import { usePrograms, programNames, programFilterOptions, matchesProgram } from '../lib/programs'
 
 // Drag-and-drop class scheduler.
 //
@@ -150,6 +151,8 @@ export default function SchedulerBoard({ rooms, hallRooms, hosts, classes, onCha
   const [students, setStudents] = useState(null)   // full roster for the left panel
   const [search, setSearch]     = useState('')
   const [enrolFilter, setEnrolFilter] = useState('all')   // see ENROLMENT_CHIPS
+  const [progFilter,  setProgFilter]  = useState('')      // program key | 'none' | '' = any (lib/programs.js)
+  const programs = usePrograms()
   const [subjFilter,  setSubjFilter]  = useState('')      // subject id, '' = any
   const [chapFilter,  setChapFilter]  = useState('')      // chapter id, '' = any (needs a subject)
   const [unitFilter,  setUnitFilter]  = useState('')      // unit id, '' = whole chapter
@@ -340,7 +343,7 @@ export default function SchedulerBoard({ rooms, hallRooms, hosts, classes, onCha
     () => new Map((subjects || []).map(s => [String(s._id), s])),
     [subjects],
   )
-  const filterCtx = { subjectsById, chapterSets }
+  const filterCtx = { subjectsById, chapterSets, programs }
   const activeConditions = advConditions.filter(conditionComplete)
   const advChecking = activeConditions.some(c =>
     !conditionReady(c, filterCtx) && chapterSets[chapterConditionKey(c)] !== 'error')
@@ -354,6 +357,7 @@ export default function SchedulerBoard({ rooms, hallRooms, hosts, classes, onCha
     if (enrolFilter === 'subjects' && !(s.caSubjects || []).length) return false
     if (enrolFilter === 'unset' && (s.caLevel || (s.caSubjects || []).length)) return false
     if (['group1', 'group2', 'both'].includes(enrolFilter) && s.caGroup !== enrolFilter) return false
+    if (!matchesProgram(s, progFilter)) return false
     if (pickedSubject && !studiesSubject(s, pickedSubject)) return false
     if (!advConditions.every(c => evalCondition(s, c, filterCtx))) return false
     return true
@@ -388,12 +392,13 @@ export default function SchedulerBoard({ rooms, hallRooms, hosts, classes, onCha
   // A view captures the WHOLE filter state: the quick controls above plus the
   // advanced condition rows, so "G1 evening-slot, chapter 2 pending" is one click.
   const currentFilters = () => ({
-    quick: { enrolFilter, subjFilter, chapFilter, unitFilter, statusFilter },
+    quick: { enrolFilter, progFilter, subjFilter, chapFilter, unitFilter, statusFilter },
     conditions: advConditions,
   })
   const applyView = (v) => {
     const q = v.filters?.quick || {}
     setEnrolFilter(q.enrolFilter || 'all')
+    setProgFilter(q.progFilter || '')
     setSubjFilter(q.subjFilter || '')
     setChapFilter(q.chapFilter || '')
     setUnitFilter(q.unitFilter || '')
@@ -402,7 +407,7 @@ export default function SchedulerBoard({ rooms, hallRooms, hosts, classes, onCha
     setActiveViewId(String(v._id))
   }
   const clearAllFilters = () => {
-    setEnrolFilter('all'); setSubjFilter(''); setChapFilter(''); setUnitFilter('')
+    setEnrolFilter('all'); setProgFilter(''); setSubjFilter(''); setChapFilter(''); setUnitFilter('')
     setStatusFilter('all'); setAdvConditions([]); setActiveViewId('')
   }
 
@@ -843,6 +848,16 @@ export default function SchedulerBoard({ rooms, hallRooms, hosts, classes, onCha
               ))}
             </div>
 
+            {/* Program — Class / Workout Batch / … Combine with the paper,
+                chapter and status pickers below for "Workout students who
+                haven't finished chapter 2". */}
+            <select value={progFilter} onChange={e => setProgFilter(e.target.value)}
+              className={`w-full mt-2 px-2 py-1.5 text-xs border rounded-lg outline-none focus:ring-2 focus:ring-indigo-400 ${
+                progFilter ? 'border-indigo-400 bg-indigo-50 text-indigo-700 font-semibold' : 'border-gray-200 bg-white text-gray-600'}`}>
+              <option value="">Any program</option>
+              {programFilterOptions(programs).map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+
             <select value={subjFilter}
               onChange={e => { setSubjFilter(e.target.value); setChapFilter(''); setUnitFilter(''); setStatusFilter('all') }}
               className="w-full mt-2 px-2 py-1.5 text-xs border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-400 bg-white text-gray-600">
@@ -912,7 +927,7 @@ export default function SchedulerBoard({ rooms, hallRooms, hosts, classes, onCha
               <p className="text-[10px] text-red-500 mt-1">Some completion checks failed — those conditions are ignored.</p>
             )}
 
-            {(enrolFilter !== 'all' || subjFilter || advConditions.length > 0) && (
+            {(enrolFilter !== 'all' || progFilter || subjFilter || advConditions.length > 0) && (
               <button onClick={clearAllFilters}
                 className="mt-2 text-[10px] font-semibold text-gray-400 hover:text-indigo-600">
                 Clear filters
@@ -924,7 +939,7 @@ export default function SchedulerBoard({ rooms, hallRooms, hosts, classes, onCha
               <p className="text-xs text-gray-400 p-2">Loading…</p>
             ) : !filtered.length ? (
               <p className="text-xs text-gray-400 p-2">
-                No students match this filter{(enrolFilter !== 'all' || subjFilter) ? ' — try Clear filters' : ''}
+                No students match this filter{(enrolFilter !== 'all' || progFilter || subjFilter) ? ' — try Clear filters' : ''}
               </p>
             ) : filtered.map(s => (
               <div key={s._id}
@@ -961,6 +976,12 @@ export default function SchedulerBoard({ rooms, hallRooms, hosts, classes, onCha
                   {enrollmentLabel(s) && (
                     <span className="text-[9px] font-bold text-indigo-500 bg-indigo-50 px-1.5 py-0.5 rounded flex-shrink-0">
                       {enrollmentLabel(s)}
+                    </span>
+                  )}
+                  {programNames(s.programs, programs) && (
+                    <span className="text-[9px] font-bold text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded flex-shrink-0 max-w-[80px] truncate"
+                      title={`Program: ${programNames(s.programs, programs)}`}>
+                      {programNames(s.programs, programs)}
                     </span>
                   )}
                   {chapFilter && completionReady && (() => {
@@ -1715,7 +1736,7 @@ export default function SchedulerBoard({ rooms, hallRooms, hosts, classes, onCha
       {advOpen && (
         <AdvancedFilterPanel
           conditions={advConditions} setConditions={setAdvConditions}
-          subjects={subjects}
+          subjects={subjects} programs={programs}
           views={views} setViews={setViews}
           activeViewId={activeViewId} setActiveViewId={setActiveViewId}
           currentFilters={currentFilters} onApplyView={applyView}
@@ -1748,7 +1769,7 @@ export default function SchedulerBoard({ rooms, hallRooms, hosts, classes, onCha
 // live on the server and are shared by every admin.
 
 function AdvancedFilterPanel({
-  conditions, setConditions, subjects, views, setViews,
+  conditions, setConditions, subjects, programs, views, setViews,
   activeViewId, setActiveViewId, currentFilters, onApplyView, onClearAll,
   matchCount, onClose,
 }) {
@@ -1875,7 +1896,7 @@ function AdvancedFilterPanel({
             )}
             <div className="space-y-2">
               {conditions.map(c => (
-                <ConditionRow key={c.id} cond={c} subjects={subjects}
+                <ConditionRow key={c.id} cond={c} subjects={subjects} programs={programs}
                   onChange={patch => patchCondition(c.id, patch)}
                   onRemove={() => removeCondition(c.id)} />
               ))}
@@ -1905,7 +1926,7 @@ function AdvancedFilterPanel({
 // One condition row: field → operator → value editor, the editor's shape driven
 // by the field's kind (see lib/rosterFilter.js). Changing the field resets the
 // row so a stale value can never leak across kinds.
-function ConditionRow({ cond, subjects, onChange, onRemove }) {
+function ConditionRow({ cond, subjects, programs, onChange, onRemove }) {
   const def = fieldDef(cond.field)
   if (!def) return null
   const ops = opsFor(def)
@@ -1976,6 +1997,27 @@ function ConditionRow({ cond, subjects, onChange, onRemove }) {
                   className={`text-[10px] font-bold px-2 py-1 rounded-md ${
                     on ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>
                   {o.label}
+                </button>
+              )
+            })}
+          </div>
+        )}
+
+        {def.kind === 'program' && cond.op !== 'not_set' && (
+          <div className="flex flex-wrap gap-1">
+            {programs === null ? (
+              <span className="text-[10px] text-gray-400">Loading programs…</span>
+            ) : !(programs || []).length ? (
+              <span className="text-[10px] text-gray-400">Programs could not be loaded.</span>
+            ) : programs.map(p => {
+              const id = p.key
+              const on = (cond.value || []).includes(id)
+              return (
+                <button key={id}
+                  onClick={() => onChange({ value: on ? cond.value.filter(v => v !== id) : [...(cond.value || []), id] })}
+                  className={`text-[10px] font-bold px-2 py-1 rounded-md ${
+                    on ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>
+                  {p.name}{p.active ? '' : ' (retired)'}
                 </button>
               )
             })}
