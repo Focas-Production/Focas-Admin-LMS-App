@@ -11,6 +11,14 @@ function fmtSize(bytes) {
   return `${(bytes / 1e3).toFixed(0)} KB`
 }
 
+function fmtDuration(sec) {
+  if (!sec) return '—'
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = Math.floor(sec % 60)
+  if (h) return `${h}h ${m}m`
+  if (m) return `${m}m ${s}s`
+  return `${s}s`
+}
+
 function fmtDate(d) {
   return d ? new Date(d).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : ''
 }
@@ -1190,6 +1198,7 @@ export default function ContentPage() {
                     <th className="text-left px-5 py-3">Title</th>
                     <th className="text-left px-4 py-3">Type</th>
                     <th className="text-left px-4 py-3">Category</th>
+                    <th className="text-left px-4 py-3">Duration</th>
                     <th className="text-left px-4 py-3">Size</th>
                     <th className="text-left px-4 py-3">Date</th>
                     <th className="px-4 py-3"/>
@@ -1199,14 +1208,14 @@ export default function ContentPage() {
                   {loading ? (
                     [...Array(4)].map((_,i)=>(
                       <tr key={i} className="border-b border-gray-50 animate-pulse">
-                        {[5,3,3,3,3,2].map((w,j)=>(
+                        {[5,3,3,3,3,3,2].map((w,j)=>(
                           <td key={j} className="px-4 py-3"><div className={`h-4 bg-gray-100 rounded w-${w}/5`}/></td>
                         ))}
                       </tr>
                     ))
                   ) : displayItems.length === 0 ? (
                     <tr>
-                      <td colSpan={6} className="py-16 text-center">
+                      <td colSpan={7} className="py-16 text-center">
                         <svg className="w-12 h-12 text-gray-200 mx-auto mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg>
                         <p className="text-gray-400 text-sm">{filesCat ? 'No files in this category' : 'No files in this folder yet'}</p>
                       </td>
@@ -1252,6 +1261,7 @@ export default function ContentPage() {
                           <p className="text-[10px] text-rose-400 mt-0.5 font-medium">+ Answer</p>
                         )}
                       </td>
+                      <td className="px-4 py-3 text-gray-500">{item.type==='video' ? fmtDuration(item.durationSec) : '—'}</td>
                       <td className="px-4 py-3 text-gray-500">{item.sizeLabel}</td>
                       <td className="px-4 py-3 text-gray-400">{fmtDate(item.createdAt)}</td>
                       <td className="px-4 py-3">
