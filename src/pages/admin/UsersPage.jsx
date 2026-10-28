@@ -1357,6 +1357,9 @@ export default function UsersPage() {
   const [role,    setRole]    = useState('')
   const [program, setProgram] = useState('')   // program key | 'none' | '' (any)
   const programs = usePrograms()
+  const [level,   setLevel]   = useState('')
+  const [batch,   setBatch]   = useState('')
+  const [batches, setBatches] = useState([])
   const [counts,  setCounts]  = useState(null)
   const [loading, setLoading] = useState(true)
   const [grantUser,    setGrantUser]    = useState(null)
@@ -1371,14 +1374,18 @@ export default function UsersPage() {
 
   function load() {
     setLoading(true)
-    const query = new URLSearchParams({ page, limit: pageSize, ...(search && { search }), ...(role && { role }), ...(program && { program }) })
+    const query = new URLSearchParams({
+      page, limit: pageSize,
+      ...(search && { search }), ...(role && { role }), ...(program && { program }),
+      ...(level && { level }), ...(batch && { batch }),
+    })
     apiFetch(`/api/admin/users?${query}`)
-      .then(d => { setUsers(d.users || []); setTotal(d.pagination?.total || 0); setCounts(d.counts || null) })
+      .then(d => { setUsers(d.users || []); setTotal(d.pagination?.total || 0); setCounts(d.counts || null); setBatches(d.batches || []) })
       .catch(() => {})
       .finally(() => setLoading(false))
   }
 
-  useEffect(() => { load() }, [page, pageSize, search, role, program])
+  useEffect(() => { load() }, [page, pageSize, search, role, program, level, batch])
   // AdminLayout's <main> is the scroller — jump back to the top on a new page.
   useEffect(() => { document.querySelector('main')?.scrollTo({ top: 0 }) }, [page, pageSize])
 
@@ -1412,9 +1419,9 @@ export default function UsersPage() {
       <div className="flex flex-wrap gap-2 mb-4">
         {[
           { key: '',        label: 'All users', count: counts?.all },
-          { key: 'admin',   label: 'Admins',    count: counts?.admin },
-          { key: 'mentor',  label: 'Mentors',   count: counts?.mentor },
           { key: 'student', label: 'Students',  count: counts?.student },
+          { key: 'mentor',  label: 'Mentors',   count: counts?.mentor },
+          { key: 'admin',   label: 'Admins',    count: counts?.admin },
         ].map(o => (
           <button key={o.key || 'all'} onClick={() => { setRole(o.key); setPage(1) }}
             className={`text-xs font-semibold px-3 py-1.5 rounded-lg transition-colors ${
@@ -1422,6 +1429,14 @@ export default function UsersPage() {
             {o.label}{o.count != null ? ` · ${o.count}` : ''}
           </button>
         ))}
+        {/* A batch belongs to a level, so changing level clears the batch. */}
+        <select value={level} onChange={e => { setLevel(e.target.value); setBatch(''); setPage(1) }}
+          className={`text-xs font-semibold px-2.5 py-1.5 rounded-lg border outline-none focus:ring-2 focus:ring-indigo-400 ${
+            level ? 'bg-indigo-50 text-indigo-700 border-indigo-400' : 'bg-white text-gray-600 border-gray-200'}`}>
+          <option value="">All levels</option>
+          {CA_LEVELS.map(l => <option key={l} value={l}>{l}</option>)}
+          <option value="none">Level not set</option>
+        </select>
         {/* Program narrows the list and every chip count above. */}
         <select value={program} onChange={e => { setProgram(e.target.value); setPage(1) }}
           className={`text-xs font-semibold px-2.5 py-1.5 rounded-lg border outline-none focus:ring-2 focus:ring-indigo-400 ${
@@ -1429,6 +1444,22 @@ export default function UsersPage() {
           <option value="">Any program</option>
           {programFilterOptions(programs).map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
+        <select value={batch} onChange={e => { setBatch(e.target.value); setPage(1) }}
+          className={`text-xs font-semibold px-2.5 py-1.5 rounded-lg border outline-none focus:ring-2 focus:ring-indigo-400 ${
+            batch ? 'bg-indigo-50 text-indigo-700 border-indigo-400' : 'bg-white text-gray-600 border-gray-200'}`}>
+          <option value="">All batches</option>
+          {batches.map(b => <option key={b} value={b}>{b}</option>)}
+          <option value="none">Batch not set</option>
+        </select>
+        {(program || level || batch || search) && (
+          <button onClick={() => { setProgram(''); setLevel(''); setBatch(''); setSearch(''); setPage(1) }}
+            className="flex items-center gap-1 text-xs font-semibold px-2.5 py-1.5 rounded-lg text-gray-500 border border-gray-200 bg-white hover:bg-gray-50 hover:text-gray-700 transition-colors">
+            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+            Clear
+          </button>
+        )}
       </div>
 
       <div className="bg-white rounded-2xl shadow-sm overflow-x-auto">
