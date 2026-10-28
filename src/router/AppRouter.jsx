@@ -14,11 +14,11 @@ import PurchasesPage from '../pages/admin/PurchasesPage'
 import ContentPage from '../pages/admin/ContentPage'
 import SubjectsPage from '../pages/admin/SubjectsPage'
 import TestSeriesAdminPage from '../pages/admin/TestSeriesAdminPage'
-import AiQuestionBankPage from '../pages/admin/AiQuestionBankPage'
 import LiveClassesPage from '../pages/admin/LiveClassesPage'
 import ChapterProgressPage from '../pages/admin/ChapterProgressPage'
 import MentorHoursPage from '../pages/admin/MentorHoursPage'
 import ClassFeedbackPage from '../pages/admin/ClassFeedbackPage'
+import ParentReportsPage from '../pages/admin/ParentReportsPage'
 
 function RootRedirect() {
   const { user, loading } = useAuth()
@@ -38,6 +38,7 @@ export default function AppRouter() {
         <Route path="users"    element={<UsersPage />} />
         <Route path="users/:id/progress" element={<StudentProgressPage />} />
         <Route path="progress"  element={<ProgressListPage />} />
+        <Route path="parent-reports" element={<ParentReportsPage />} />
         <Route path="products"  element={<ProductsPage />} />
         <Route path="purchases" element={<PurchasesPage />} />
         <Route path="content"   element={<ContentPage />} />
@@ -47,7 +48,7 @@ export default function AppRouter() {
         <Route path="chapter-progress" element={<ChapterProgressPage />} />
         <Route path="mentor-hours" element={<MentorHoursPage />} />
         <Route path="class-feedback" element={<ClassFeedbackPage />} />
-        <Route path="ai-question-bank" element={<AiQuestionBankPage />} />
+        <Route path="ai-question-bank" element={<Navigate to="/admin/products" replace />} />
       </Route>
 
       <Route path="*" element={<Navigate to="/" replace />} />

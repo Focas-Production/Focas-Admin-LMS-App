@@ -5,6 +5,8 @@ import { CA_LEVELS, CA_GROUPS, groupLabel, ATTEMPT_MONTHS, upcomingAttempts } fr
 import SlotEditorModal from '../../components/SlotEditorModal'
 import { availabilityLabel, hasSlotAvailability } from '../../lib/rosterFilter'
 import { usePrograms, programNames, programFilterOptions } from '../../lib/programs'
+import ParentContactModal from '../../components/ParentContactModal'
+import { showPhone } from '../../lib/parentReport'
 
 function fmtDate(d) {
   if (!d) return '—'
@@ -972,6 +974,13 @@ function UserDetailDrawer({ user, onClose }) {
                 {programNames(user.programs, programs) || <span className="text-gray-400">Not set</span>}
               </Row>
             )}
+            {!user.isAdmin && !user.isMentor && (user.caLevel === 'Foundation' || user.parent?.phone) && (
+              <Row label="Parent">
+                {user.parent?.phone
+                  ? `${user.parent.name ? `${user.parent.name} · ` : ''}${showPhone(user.parent.phone)}${user.parent.reportsOff ? ' (reports off)' : ''}`
+                  : <span className="text-amber-600">Not set</span>}
+              </Row>
+            )}
             <Row label="Source"><span className="capitalize">{user.source || '—'}</span></Row>
             <Row label="Joined">{fmtDate(user.createdAt)}</Row>
             <Row label="Last Login">{user.activeSession?.lastLoginTime ? fmtDate(user.activeSession.lastLoginTime) : '—'}</Row>
@@ -1370,6 +1379,7 @@ export default function UsersPage() {
   const [detailUser,   setDetailUser]   = useState(null)
   const [syllabusMentor, setSyllabusMentor] = useState(null)
   const [courseUser,     setCourseUser]     = useState(null)
+  const [parentUser,     setParentUser]     = useState(null)
   const [slotUser,       setSlotUser]       = useState(null)
 
   function load() {
@@ -1576,6 +1586,21 @@ export default function UsersPage() {
                             { label: 'Test limit', icon: ICON_CHECK, className: 'text-amber-600 hover:bg-amber-50',   onClick: () => setLimitUser(u) },
                             { label: 'AI limit',   icon: ICON_BOLT,  className: 'text-violet-600 hover:bg-violet-50', onClick: () => setAiLimitUser(u) },
                           ]} />
+                        {/* Foundation students are school children — their
+                            parent gets a weekly + monthly WhatsApp report. */}
+                        {(u.caLevel === 'Foundation' || u.parent?.phone) && (
+                          <button onClick={() => setParentUser(u)}
+                            title={u.parent?.phone ? `Parent WhatsApp: ${showPhone(u.parent.phone)}${u.parent.reportsOff ? ' (reports off)' : ''}` : 'No parent WhatsApp number yet — add one for the weekly/monthly report'}
+                            className={`flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg transition-colors whitespace-nowrap ${
+                              u.parent?.phone && !u.parent.reportsOff
+                                ? 'text-rose-600 bg-rose-50 hover:bg-rose-100'
+                                : 'text-amber-700 bg-amber-50 hover:bg-amber-100'}`}>
+                            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
+                            </svg>
+                            {u.parent?.phone ? 'Parent' : 'Add parent'}
+                          </button>
+                        )}
                       </div>
                     )}
                   </td>
@@ -1651,6 +1676,14 @@ export default function UsersPage() {
           user={courseUser}
           onClose={() => setCourseUser(null)}
           onUpdated={load}
+        />
+      )}
+
+      {parentUser && (
+        <ParentContactModal
+          student={parentUser}
+          onClose={() => setParentUser(null)}
+          onSaved={load}
         />
       )}
 

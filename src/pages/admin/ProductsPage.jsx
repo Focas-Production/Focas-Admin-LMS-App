@@ -210,6 +210,83 @@ function AiTierPanel({ product }) {
   )
 }
 
+// ─── AI monthly generation limits (Lite / Pro) ──────────────────────────────────
+// Global settings, not per product — opened from the "AI limits" button in the header.
+function AiLimitsModal({ onClose }) {
+  const [lite, setLite]     = useState('')
+  const [pro, setPro]       = useState('')
+  const [orig, setOrig]     = useState({ lite: '', pro: '' })
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved]   = useState(false)
+  const [error, setError]   = useState(null)
+
+  useEffect(() => {
+    apiFetch('/api/admin/settings').then(s => {
+      const l = String(s?.aiGen?.liteMonthlyLimit ?? 10)
+      const p = String(s?.aiGen?.proMonthlyLimit ?? 50)
+      setLite(l); setPro(p); setOrig({ lite: l, pro: p })
+    }).catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    const onKey = e => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  const dirty = lite !== orig.lite || pro !== orig.pro
+
+  const save = async () => {
+    setSaving(true); setError(null); setSaved(false)
+    try {
+      await apiFetch('/api/admin/settings', {
+        method: 'PUT',
+        body: JSON.stringify({ aiGen: { liteMonthlyLimit: Number(lite), proMonthlyLimit: Number(pro) } }),
+      })
+      setOrig({ lite, pro })
+      setSaved(true)
+      setTimeout(() => setSaved(false), 2500)
+    } catch (e) { setError(e.message || 'Save failed') } finally { setSaving(false) }
+  }
+
+  const inp = 'w-28 px-3 py-2 text-sm border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-400'
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/30" onClick={onClose} />
+      <div className="relative bg-white rounded-2xl shadow-xl w-full max-w-md p-5">
+        <div className="flex items-start justify-between gap-3 mb-1">
+          <h2 className="font-bold text-gray-900">AI Monthly Generation Limits</h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600" aria-label="Close">
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+        <p className="text-xs text-gray-400 mb-4">
+          How many AI questions a student may generate per calendar month. A student is <strong>Pro</strong> if they own
+          any product marked AI&nbsp;Pro, otherwise <strong>Lite</strong>. Usage resets automatically each month.
+          Set 0 to disable a tier. Individual students can be given a higher limit on the Users page.
+        </p>
+        <div className="flex flex-wrap items-end gap-5">
+          <label className="block">
+            <span className="block text-xs font-semibold text-sky-700 mb-1">Lite — per month</span>
+            <input type="number" min="0" value={lite} onChange={e => { setLite(e.target.value); setSaved(false) }} className={inp} />
+          </label>
+          <label className="block">
+            <span className="block text-xs font-semibold text-violet-700 mb-1">Pro — per month</span>
+            <input type="number" min="0" value={pro} onChange={e => { setPro(e.target.value); setSaved(false) }} className={inp} />
+          </label>
+          <button onClick={save} disabled={!dirty || saving}
+            className="px-5 py-2 rounded-xl bg-indigo-600 text-white font-semibold text-sm hover:bg-indigo-700 disabled:bg-gray-200 disabled:text-gray-400">
+            {saving ? 'Saving…' : saved ? '✓ Saved' : 'Save Limits'}
+          </button>
+        </div>
+        {error && <p className="text-xs text-red-500 mt-2">{error}</p>}
+      </div>
+    </div>
+  )
+}
+
 // ─── Product community ──────────────────────────────────────────────────────────
 // Decides which WhatsApp order-confirmation template a buyer of this product gets.
 // Every product defaults to Lite. When an order mixes communities the strongest
@@ -748,6 +825,8 @@ export default function ProductsPage() {
   const [selected,  setSelected]  = useState(null)  // product whose access drawer is open
   const [search,    setSearch]    = useState('')
   const [query,     setQuery]     = useState('')   // debounced value sent to the API
+  const [showAiLimits, setShowAiLimits] = useState(false)
+  const closeAiLimits = useCallback(() => setShowAiLimits(false), [])
 
   // Subjects only need to load once.
   useEffect(() => {
@@ -801,6 +880,11 @@ export default function ProductsPage() {
           <h1 className="text-2xl font-bold text-gray-900">Products</h1>
           <p className="text-gray-400 text-sm mt-0.5">{products.length} products</p>
         </div>
+        <div className="flex items-center gap-2 w-full sm:w-auto">
+        <button onClick={() => setShowAiLimits(true)}
+          className="shrink-0 px-3 py-2 text-sm font-medium rounded-xl border border-violet-200 bg-violet-50 text-violet-700 hover:bg-violet-100">
+          AI limits
+        </button>
         <div className="relative w-full sm:w-72">
           <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35M11 19a8 8 0 100-16 8 8 0 000 16z" />
@@ -824,7 +908,10 @@ export default function ProductsPage() {
             </button>
           )}
         </div>
+        </div>
       </div>
+
+      {showAiLimits && <AiLimitsModal onClose={closeAiLimits} />}
 
       {!loading && products.length === 0 ? (
         <div className="text-center py-16 text-gray-400 text-sm">
