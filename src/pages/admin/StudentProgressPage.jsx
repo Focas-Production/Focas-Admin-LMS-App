@@ -1445,6 +1445,7 @@ function LecturesSection({ studentId, attemptId }) {
             { label: 'Items opened', value: total },
             { label: 'Completed',    value: data.progress.filter(p => p.completed).length, tone: 'emerald' },
             { label: 'Watch time',   value: fmtSeconds(data.totalSeconds), tone: 'indigo' },
+            { label: 'Exact (played)', value: fmtSeconds(data.playedSeconds || 0) },
           ]} />
           <div className="p-4 space-y-4">
             {groups.map((g, gi) => {
@@ -2639,7 +2640,12 @@ export default function StudentProgressPage() {
 
         <StatCard label="Lecture watch time" value={fmtSeconds(lectures.watchedSeconds)} tone="indigo"
           sub={`${lectures.completed} of ${lectures.lectures} items completed`}
-          hint={lectures.lastWatchedAt ? `Last watched ${fmtDay(lectures.lastWatchedAt)}` : 'Never opened a lecture'} />
+          hint={[
+            lectures.lastWatchedAt ? `Last watched ${fmtDay(lectures.lastWatchedAt)}` : 'Never opened a lecture',
+            // watchedSeconds includes viewing from before exact tracking (an
+            // estimate capped at each video's length); playedSeconds is exact
+            lectures.playedSeconds < lectures.watchedSeconds ? `${fmtSeconds(lectures.playedSeconds)} exact, rest estimated` : null,
+          ].filter(Boolean).join(' · ')} />
 
         <StatCard label="Estimated completion"
           value={forecast.estimatedCompletion ? fmtDay(forecast.estimatedCompletion) : '—'}
