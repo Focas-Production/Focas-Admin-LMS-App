@@ -977,7 +977,7 @@ function UserDetailDrawer({ user, onClose }) {
             {!user.isAdmin && !user.isMentor && (user.caLevel === 'Foundation' || user.parent?.phone) && (
               <Row label="Parent">
                 {user.parent?.phone
-                  ? `${user.parent.name ? `${user.parent.name} · ` : ''}${showPhone(user.parent.phone)}${user.parent.reportsOff ? ' (reports off)' : ''}`
+                  ? `${user.parent.name ? `${user.parent.name} · ` : ''}${showPhone(user.parent.phone)}${[user.parent.reportsOff && 'reports off', user.parent.alertsOff && 'class alerts off'].filter(Boolean).map(t => ` (${t})`).join('')}`
                   : <span className="text-amber-600">Not set</span>}
               </Row>
             )}
@@ -1590,9 +1590,9 @@ export default function UsersPage() {
                             parent gets a weekly + monthly WhatsApp report. */}
                         {(u.caLevel === 'Foundation' || u.parent?.phone) && (
                           <button onClick={() => setParentUser(u)}
-                            title={u.parent?.phone ? `Parent WhatsApp: ${showPhone(u.parent.phone)}${u.parent.reportsOff ? ' (reports off)' : ''}` : 'No parent WhatsApp number yet — add one for the weekly/monthly report'}
+                            title={u.parent?.phone ? `Parent WhatsApp: ${showPhone(u.parent.phone)}${[u.parent.reportsOff && 'reports off', u.parent.alertsOff && 'class alerts off'].filter(Boolean).map(t => ` (${t})`).join('')}` : 'No parent WhatsApp number yet — add one for reports and class alerts'}
                             className={`flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg transition-colors whitespace-nowrap ${
-                              u.parent?.phone && !u.parent.reportsOff
+                              u.parent?.phone && !(u.parent.reportsOff && u.parent.alertsOff)
                                 ? 'text-rose-600 bg-rose-50 hover:bg-rose-100'
                                 : 'text-amber-700 bg-amber-50 hover:bg-amber-100'}`}>
                             <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">

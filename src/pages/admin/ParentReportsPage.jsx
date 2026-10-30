@@ -59,7 +59,7 @@ function statusLine(row, state) {
     case 'sending': return 'In progress'
     case 'ready': return 'Goes out on the next run'
     case 'nonumber': return 'Add the parent number'
-    case 'off': return 'Reports off for this student'
+    case 'off': return 'Reports off for this parent'
     case 'noclasses': return 'Nothing to report this period'
     default: return (row.status || '').replace(/^skipped: /, '')
   }
@@ -181,7 +181,7 @@ function SettingsModal({ config, onClose, onSaved }) {
 
 // ───────────────────────────── the page ─────────────────────────────
 
-// Per-student on/off for the parent reports (User.parent.reportsOff).
+// Per-parent on/off switch (User.parent.reportsOff / alertsOff).
 function Switch({ on, busy, onChange, label }) {
   return (
     <button type="button" role="switch" aria-checked={on} aria-label={label} title={label} disabled={busy} onClick={() => onChange(!on)}
@@ -284,12 +284,14 @@ export default function ParentReportsPage() {
     }
   }
 
-  // Row switch: reports on / off for this one student.
-  async function toggleReports(row, on) {
-    setBusy(`switch:${row.studentId}`)
+  // Row switches, per parent: `key` is 'reportsOff' (weekly/monthly reports)
+  // or 'alertsOff' (class scheduled / changed / removed / missed / left early).
+  const SWITCH_LABEL = { reportsOff: 'Reports', alertsOff: 'Class alerts' }
+  async function toggleParent(row, key, on) {
+    setBusy(`switch:${key}:${row.studentId}`)
     try {
-      await apiFetch(`/api/admin/users/${row.studentId}/parent`, { method: 'PUT', body: JSON.stringify({ reportsOff: !on }) })
-      setToast({ text: `Reports ${on ? 'on' : 'off'} for ${row.name || 'this student'}` })
+      await apiFetch(`/api/admin/users/${row.studentId}/parent`, { method: 'PUT', body: JSON.stringify({ [key]: !on }) })
+      setToast({ text: `${SWITCH_LABEL[key]} ${on ? 'on' : 'off'} for ${row.name || 'this student'}'s parent` })
     } catch (e) {
       setToast({ error: true, text: e.message })
     } finally {
@@ -401,7 +403,8 @@ export default function ParentReportsPage() {
             <tr className="text-left text-[11px] uppercase tracking-wide text-gray-500 bg-gray-50 border-b border-gray-200">
               <th className="px-4 py-2.5 font-semibold">Student</th>
               <th className="px-4 py-2.5 font-semibold">Parent</th>
-              <th className="px-4 py-2.5 font-semibold">Reports</th>
+              <th className="px-4 py-2.5 font-semibold" title="Weekly / monthly reports to this parent">Reports</th>
+              <th className="px-4 py-2.5 font-semibold" title="Class scheduled / changed / removed / missed / left early — to this parent">Class alerts</th>
               <th className="px-4 py-2.5 font-semibold">Classes attended</th>
               <th className="px-4 py-2.5 font-semibold">Class work</th>
               <th className="px-4 py-2.5 font-semibold">Overall attendance</th>
@@ -412,9 +415,9 @@ export default function ParentReportsPage() {
           </thead>
           <tbody className="divide-y divide-gray-100">
             {data === null ? (
-              [1, 2, 3, 4].map(i => <tr key={i}><td colSpan={9} className="px-4 py-3"><div className="h-6 bg-gray-100 rounded animate-pulse" /></td></tr>)
+              [1, 2, 3, 4].map(i => <tr key={i}><td colSpan={10} className="px-4 py-3"><div className="h-6 bg-gray-100 rounded animate-pulse" /></td></tr>)
             ) : !rows.length ? (
-              <tr><td colSpan={9} className="px-4 py-10 text-center text-gray-400">
+              <tr><td colSpan={10} className="px-4 py-10 text-center text-gray-400">
                 {data.rows?.length ? 'No students match.' : 'No Foundation students yet — set a student\'s level to Foundation on Users → Course.'}
               </td></tr>
             ) : rows.map(r => {
@@ -433,16 +436,18 @@ export default function ParentReportsPage() {
                       {r.parentPhone ? 'Edit' : 'Add number'}
                     </button>
                   </td>
-                  <td className="px-4 py-3">
-                    {r.status !== 'no longer Foundation' && (
-                      <div className="flex items-center gap-2">
-                        <Switch on={!r.reportsOff} busy={busy === `switch:${r.studentId}`}
-                          label={r.reportsOff ? `Reports off for ${r.name} — click to turn on` : `Reports on for ${r.name} — click to turn off`}
-                          onChange={(on) => toggleReports(r, on)} />
-                        <span className={`text-[11px] font-medium ${r.reportsOff ? 'text-gray-400' : 'text-emerald-700'}`}>{r.reportsOff ? 'Off' : 'On'}</span>
-                      </div>
-                    )}
-                  </td>
+                  {['reportsOff', 'alertsOff'].map(key => (
+                    <td key={key} className="px-4 py-3">
+                      {r.status !== 'no longer Foundation' && (
+                        <div className="flex items-center gap-2">
+                          <Switch on={!r[key]} busy={busy === `switch:${key}:${r.studentId}`}
+                            label={`${SWITCH_LABEL[key]} ${r[key] ? 'off' : 'on'} for ${r.name}'s parent — click to turn ${r[key] ? 'on' : 'off'}`}
+                            onChange={(on) => toggleParent(r, key, on)} />
+                          <span className={`text-[11px] font-medium ${r[key] ? 'text-gray-400' : 'text-emerald-700'}`}>{r[key] ? 'Off' : 'On'}</span>
+                        </div>
+                      )}
+                    </td>
+                  ))}
                   <td className="px-4 py-3">{st ? <Stat a={st.period.attended} b={st.period.held} pct={st.period.percent} /> : <span className="text-gray-300">—</span>}</td>
                   <td className="px-4 py-3">{st ? <Stat a={st.period.workSubmitted} b={st.period.held} sub={`overall ${st.overall.workSubmitted} / ${st.overall.held}`} /> : <span className="text-gray-300">—</span>}</td>
                   <td className="px-4 py-3">{st ? <Stat a={`${st.overall.percent}%`} sub={`${st.overall.attended} of ${st.overall.held} classes`} /> : <span className="text-gray-300">—</span>}</td>

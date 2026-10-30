@@ -13,7 +13,8 @@ export default function ParentContactModal({ student, onClose, onSaved }) {
   const [preview, setPreview] = useState(undefined)   // undefined = loading, null = none
   const [name,   setName]   = useState('')
   const [phone,  setPhone]  = useState('')
-  const [off,    setOff]    = useState(false)
+  const [off,    setOff]    = useState(false)        // weekly / monthly reports
+  const [alertsOff, setAlertsOff] = useState(false)   // class alerts
   const [saving, setSaving] = useState(false)
   const [error,  setError]  = useState('')
 
@@ -35,6 +36,7 @@ export default function ParentContactModal({ student, onClose, onSaved }) {
         setName(d.parent.name)
         setPhone(showPhone(d.parent.phone))
         setOff(d.parent.reportsOff)
+        setAlertsOff(d.parent.alertsOff)
       })
       .catch(e => { if (alive) { setData({ failed: true }); setError(e.message) } })
     return () => { alive = false }
@@ -51,7 +53,7 @@ export default function ParentContactModal({ student, onClose, onSaved }) {
     try {
       const d = await apiFetch(`/api/admin/users/${student._id || student.studentId}/parent`, {
         method: 'PUT',
-        body: JSON.stringify({ name, phone, reportsOff: off }),
+        body: JSON.stringify({ name, phone, reportsOff: off, alertsOff }),
       })
       onSaved?.(d.parent)
       onClose()
@@ -99,8 +101,15 @@ export default function ParentContactModal({ student, onClose, onSaved }) {
               <label className="flex items-start gap-2.5 cursor-pointer">
                 <input type="checkbox" checked={!off} onChange={e => setOff(!e.target.checked)} className="mt-0.5 w-4 h-4 accent-indigo-600" />
                 <span className="text-sm text-gray-700">
-                  Send weekly and monthly reports to this parent
-                  <span className="block text-[11px] text-gray-400">Untick to stop the reports for this student only.</span>
+                  Weekly and monthly reports
+                  <span className="block text-[11px] text-gray-400">Attendance, class work and syllabus progress.</span>
+                </span>
+              </label>
+              <label className="flex items-start gap-2.5 cursor-pointer">
+                <input type="checkbox" checked={!alertsOff} onChange={e => setAlertsOff(!e.target.checked)} className="mt-0.5 w-4 h-4 accent-indigo-600" />
+                <span className="text-sm text-gray-700">
+                  Class alerts
+                  <span className="block text-[11px] text-gray-400">Class scheduled, changed, removed, missed or left early. Untick either box to stop that kind for this parent only.</span>
                 </span>
               </label>
 

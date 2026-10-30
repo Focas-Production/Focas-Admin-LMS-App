@@ -31,19 +31,19 @@ Dear Parent,
 
 Greetings from FOCAS Edu! Here is the ${p.period} progress report of *${p.student}* for *${p.dates}*.
 
-*📊 This period*
-• Classes attended: ${p.classes}
-• Class work submitted: ${p.work}
+*📊 This Period*
+• *Classes attended:* ${p.classes}
+• *Class work submitted:* ${p.work}
 
-*📈 Overall (current batch)*
-• Attendance: ${p.overall_attendance}
-• Class work submitted: ${p.overall_work}
-• Syllabus completed: ${p.progress}
+*📈 Overall (Current Batch)*
+• *Attendance:* ${p.overall_attendance}
+• *Class work submitted:* ${p.overall_work}
+• *Syllabus completed:* ${p.progress}
 
 Please encourage your child to attend every class, submit class work on time and study regularly at home. If your child needs any extra help or support, we are always here for you.
 
-For any questions or support, please call or WhatsApp us at ${p.contact}.
+For any questions or support, please call or WhatsApp us at *${p.contact}*.
 
 Warm regards,
-Team FOCAS Edu`
+*Team FOCAS Edu*`
 }
