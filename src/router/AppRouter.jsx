@@ -19,6 +19,7 @@ import ChapterProgressPage from '../pages/admin/ChapterProgressPage'
 import MentorHoursPage from '../pages/admin/MentorHoursPage'
 import ClassFeedbackPage from '../pages/admin/ClassFeedbackPage'
 import ParentReportsPage from '../pages/admin/ParentReportsPage'
+import StudentDetailsPage from '../pages/admin/StudentDetailsPage'
 
 function RootRedirect() {
   const { user, loading } = useAuth()
@@ -39,6 +40,7 @@ export default function AppRouter() {
         <Route path="users/:id/progress" element={<StudentProgressPage />} />
         <Route path="progress"  element={<ProgressListPage />} />
         <Route path="parent-reports" element={<ParentReportsPage />} />
+        <Route path="student-details" element={<StudentDetailsPage />} />
         <Route path="products"  element={<ProductsPage />} />
         <Route path="purchases" element={<PurchasesPage />} />
         <Route path="content"   element={<ContentPage />} />
