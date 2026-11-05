@@ -6,7 +6,7 @@
 // send / resend, and change the schedule.
 // Data: /api/admin/parent-reports (server/controllers/parentReportController.js).
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import { apiFetch } from '../../api'
+import { apiFetch, authHeaders } from '../../api'
 import ParentContactModal from '../../components/ParentContactModal'
 import { reportMessage, showPhone } from '../../lib/parentReport'
 
@@ -54,7 +54,7 @@ function stateOf(row) {
 function statusLine(row, state) {
   const r = row.report
   switch (state) {
-    case 'sent': return `${fmtStamp(r.sentAt)}${r.sentTo && r.sentTo !== r.parentPhone ? ` · test → ${showPhone(r.sentTo)}` : ''}`
+    case 'sent': return `${fmtStamp(r.sentAt)}${r.sentTo && r.sentTo !== r.parentPhone ? ` · test mode: went to the TEST phone ${showPhone(r.sentTo)}, not the parent` : ''}`
     case 'failed': return r.lastError || 'WhatsApp did not accept the message'
     case 'sending': return 'In progress'
     case 'ready': return 'Goes out on the next run'
@@ -300,6 +300,28 @@ export default function ParentReportsPage() {
     }
   }
 
+  // Monthly: open the full-progress PDF — the copy the parent got if sent,
+  // else a fresh one from today's numbers. The tab is opened first (inside the
+  // click) so pop-up blockers allow it.
+  async function openPdf(row) {
+    const tab = window.open('', '_blank')
+    setBusy(`pdf:${row.studentId}`)
+    try {
+      const q = new URLSearchParams({ period, studentId: row.studentId })
+      const res = await fetch(`${import.meta.env.VITE_API_BASE}/api/admin/parent-reports/pdf?${q}`, { headers: authHeaders() })
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Could not make the PDF')
+      const url = URL.createObjectURL(await res.blob())
+      if (tab) tab.location.href = url
+      else window.location.assign(url)
+      setTimeout(() => URL.revokeObjectURL(url), 60_000)
+    } catch (e) {
+      tab?.close()
+      setToast({ text: e.message, error: true })
+    } finally {
+      setBusy('')
+    }
+  }
+
   async function send(row) {
     const label = row ? `${row.name}'s parent` : `${toSend} parent${toSend === 1 ? '' : 's'}`
     const test = cfg?.testPhone ? `\n\nTEST MODE: it goes to ${showPhone(cfg.testPhone)}, not the parent.` : ''
@@ -460,6 +482,13 @@ export default function ParentReportsPage() {
                     {st && st.period.held > 0 && (
                       <button type="button" onClick={() => setPreviewRow(r)} className={`${btn.small} border-gray-200 text-gray-600 hover:bg-gray-50 mr-1.5`}>Preview</button>
                     )}
+                    {kind === 'monthly' && ((st && st.period.held > 0) || r.report?.document) && (
+                      <button type="button" onClick={() => openPdf(r)} disabled={!!busy}
+                        title={r.report?.document ? 'The PDF sent to the parent' : 'The PDF that will be attached — from today\'s numbers'}
+                        className={`${btn.small} border-gray-200 text-gray-600 hover:bg-gray-50 mr-1.5`}>
+                        {busy === `pdf:${r.studentId}` ? 'Making…' : 'PDF'}
+                      </button>
+                    )}
                     {(r.state === 'ready' || r.state === 'failed' || r.state === 'sent') && (
                       <button type="button" onClick={() => send(r)} disabled={!!sendBlock || !!busy} title={sendBlock}
                         className={`${btn.small} border-indigo-200 text-indigo-700 hover:bg-indigo-50`}>
@@ -480,6 +509,13 @@ export default function ParentReportsPage() {
 
       {previewRow && (
         <Modal title={`Message to ${previewRow.name}'s parent`} subtitle={previewRow.parentPhone ? showPhone(previewRow.parentPhone) : 'No parent number yet'} onClose={() => setPreviewRow(null)} width="max-w-md">
+          {kind === 'monthly' && (
+            <button type="button" onClick={() => openPdf(previewRow)} disabled={!!busy}
+              className="w-full flex items-center gap-2 text-left text-[13px] bg-white border border-gray-200 rounded-xl px-3.5 py-2.5 mb-2 hover:bg-gray-50">
+              <span aria-hidden>📄</span>
+              <span className="flex-1"><span className="font-medium text-gray-800">Full progress report (PDF)</span><span className="block text-[11px] text-gray-400">Attached at the top of the message — click to open</span></span>
+            </button>
+          )}
           <pre className="text-[13px] leading-relaxed whitespace-pre-wrap font-sans bg-emerald-50 border border-emerald-100 rounded-xl px-3.5 py-3 text-gray-800">
             {reportMessage(kind, previewRow.name, data.periodLabel, previewRow.stats, cfg?.contact)}
           </pre>

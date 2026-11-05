@@ -39,7 +39,7 @@ Greetings from FOCAS Edu! Here is the ${p.period} progress report of *${p.studen
 • *Attendance:* ${p.overall_attendance}
 • *Class work submitted:* ${p.overall_work}
 • *Syllabus completed:* ${p.progress}
-
+${kind === 'monthly' ? '\n📄 The attached PDF has the full report — every class, chapter-wise syllabus progress and test marks.\n' : ''}
 Please encourage your child to attend every class, submit class work on time and study regularly at home. If your child needs any extra help or support, we are always here for you.
 
 For any questions or support, please call or WhatsApp us at *${p.contact}*.
