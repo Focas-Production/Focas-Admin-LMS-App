@@ -831,7 +831,7 @@ export default function LiveClassesPage() {
                     onChange={e => set({ hostUserId: e.target.value })}
                     className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg bg-white outline-none focus:ring-2 focus:ring-indigo-400">
                     <option value="">Keep current host{edit.cls.host?.name ? ` (${edit.cls.host.name})` : ''}</option>
-                    {hosts.map(h => <option key={h.id} value={String(h.id)}>{h.name} ({h.role})</option>)}
+                    {hosts.filter(h => h.role === 'mentor').map(h => <option key={h.id} value={String(h.id)}>{h.name}</option>)}
                   </select>
                 </div>
 
@@ -1078,6 +1078,7 @@ function HallSessionModal({ form, setForm, hallRooms, hosts, sessionTypes, onSav
     const err = !form.title.trim() ? 'Give the session a title'
       : !form.sessionType ? 'Pick a session type'
       : !roomKey || !trackKey ? 'Pick a Hall track'
+      : !form.hostUserId ? 'Pick a mentor to host'
       : !start || !end || end <= start ? 'End time must be after the start time'
       : ''
     if (err) return set({ error: err })
@@ -1132,8 +1133,8 @@ function HallSessionModal({ form, setForm, hallRooms, hosts, sessionTypes, onSav
             <div>
               <p className="text-[11px] font-bold text-gray-500 uppercase mb-1">Host</p>
               <select value={form.hostUserId} onChange={e => set({ hostUserId: e.target.value })} className={inp}>
-                <option value="">Me</option>
-                {hosts.map(h => <option key={h.id} value={String(h.id)}>{h.name} ({h.role})</option>)}
+                <option value="">Select a mentor…</option>
+                {hosts.filter(h => h.role === 'mentor').map(h => <option key={h.id} value={String(h.id)}>{h.name}</option>)}
               </select>
             </div>
           </div>

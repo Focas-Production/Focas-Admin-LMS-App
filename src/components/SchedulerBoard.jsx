@@ -59,7 +59,7 @@ const initials = (name = '') => {
 //   [PA] Mentor · Room 1 · Track 1 — 6–9 AM Slot     (coords in small print — admins
 //                                                     need them, students never see them)
 // Module-level so React keeps the same element type across board re-renders.
-function CellHead({ subject, chapter, unit, mentor, slotTitle, live, roster }) {
+function CellHead({ subject, chapter, unit, mentor, mentorWarn, slotTitle, live, roster }) {
   return (
     <div className="mb-2">
       {/* Subject + live pill. Right padding keeps clear of the copy/paste buttons. */}
@@ -83,14 +83,17 @@ function CellHead({ subject, chapter, unit, mentor, slotTitle, live, roster }) {
           them, room/track/slot coords right. The count rides here rather than on
           a line of its own so a booked cell stays three lines tall. */}
       <div className="mt-1.5 flex items-center gap-1.5 min-w-0">
-        <span className="inline-flex items-center justify-center w-[18px] h-[18px] rounded-full bg-indigo-600 text-white text-[8px] font-bold tracking-wide shrink-0 ring-2 ring-indigo-100">
+        <span className={`inline-flex items-center justify-center w-[18px] h-[18px] rounded-full text-white text-[8px] font-bold tracking-wide shrink-0 ring-2 ${
+          mentorWarn ? 'bg-red-600 ring-red-100' : 'bg-indigo-600 ring-indigo-100'}`}>
           {initials(mentor)}
         </span>
         {/* Name and coords each take an equal share and truncate, so the count
             sits centred between them and nothing overlaps in the narrow
             both-rooms columns. Full text of either is on hover. */}
-        <span className="flex-1 min-w-0 truncate text-[11px] font-semibold text-gray-800" title={mentor || ''}>
-          {mentor || '…'}
+        {/* Mentor booked in another room at the same time → red ⚠ name. */}
+        <span className={`flex-1 min-w-0 truncate text-[11px] font-semibold ${mentorWarn ? 'text-red-700' : 'text-gray-800'}`}
+          title={mentorWarn || mentor || ''}>
+          {mentorWarn && <span className="text-red-600">⚠ </span>}{mentor || '…'}
         </span>
         {roster}
         {slotTitle && (
@@ -148,6 +151,10 @@ const ROSTER_BADGE = {
 }
 
 export default function SchedulerBoard({ rooms, hallRooms, hosts, classes, onChanged, onStagedCount, onBookHall, onEditClass }) {
+  // Only mentors can be picked to teach — an admin login lands on the admin
+  // panel, which has no meeting room, so an admin-hosted class could never
+  // start. The full `hosts` list stays for showing names on old classes.
+  const mentorHosts = useMemo(() => (hosts || []).filter(h => h.role === 'mentor'), [hosts])
   const [students, setStudents] = useState(null)   // full roster for the left panel
   const [search, setSearch]     = useState('')
   const [enrolFilter, setEnrolFilter] = useState('all')   // see ENROLMENT_CHIPS
@@ -460,70 +467,103 @@ export default function SchedulerBoard({ rooms, hallRooms, hosts, classes, onCha
     setSetup(null)
   }
 
-  // ── double-booking inside a room ──
-  // A student can sit in only ONE track of a room per slot — both tracks run
-  // in the same space with the same mentor at the same time, so putting the
-  // same student in Track 1 and Track 2 books them twice. The drop still
-  // lands (the admin may be mid-move), but it is flagged at once: a toast with
-  // Undo, a red chip in the grid, and a banner in Review & save.
+  // ── one person, two places at once ──
+  // A student sits in ONE class per slot — another track of the same room or a
+  // class in a different room at the same time both book them twice. A mentor
+  // may run both tracks of ONE room (they switch tracks), but not two rooms at
+  // once. Drops still land (the admin may be mid-move), but every clash is
+  // flagged at once: a toast with Undo, red chips / mentor name in the grid,
+  // and a banner in Review & save. The server asks again on save.
 
-  // The sibling tracks (same room, other track, same day/slot) where this
-  // student is already on the saved class or staged.
-  const roomClashesFor = (day, slot, col, id) => {
+  const slotWindow = (day, slot) => [
+    new Date(day.getFullYear(), day.getMonth(), day.getDate(), slot.startHour),
+    new Date(day.getFullYear(), day.getMonth(), day.getDate(), slot.endHour),
+  ]
+  const overlaps = (c, s, e) => new Date(c.scheduledStart) < e && new Date(c.scheduledEnd) > s
+  const colWhere = (col) => `${col.roomLabel} · ${col.trackLabel}`
+  const classWhere = (c) => [c.room?.label, c.track?.label].filter(Boolean).join(' · ') || c.title
+  const sameSlot = (a, day, slot) => dayKey(a.day) === dayKey(day) && a.slot.key === slot.key
+  const wheres = (list) => list.map(o => o.where).join(' & ')
+
+  // The other classes (saved or staged) this student is in at the same time.
+  const studentClashesFor = (day, slot, col, id) => {
     const sid = String(id)
+    const [s, e] = slotWindow(day, slot)
+    const here = colKey(col)
     const out = []
-    for (const sib of trackCols) {
-      if (sib.roomKey !== col.roomKey || sib.roomName === col.roomName) continue
-      const cls = cellClass(day, slot, sib)
-      const saved = !!cls && (cls.allowedStudents || []).map(String).includes(sid)
-      const parked = (staged[`${dayKey(day)}/${slot.key}/${sib.roomName}`]?.ids || []).includes(sid)
-      if (saved || parked) out.push({ trackLabel: sib.trackLabel, saved })
+    const seen = new Set()
+    for (const c of active) {
+      const k = trackKeyOf(c)
+      if (k === here || c.roomName === col.roomName || !overlaps(c, s, e)) continue
+      if (!(c.allowedStudents || []).some(x => String(x) === sid)) continue
+      if (!seen.has(k)) { seen.add(k); out.push({ where: classWhere(c), saved: true }) }
+    }
+    for (const cell of Object.values(staged)) {
+      const k = colKey(cell.col)
+      if (k === here || !sameSlot(cell, day, slot) || !cell.ids.includes(sid)) continue
+      if (!seen.has(k)) { seen.add(k); out.push({ where: colWhere(cell.col), saved: false }) }
     }
     return out
   }
 
-  // Every staged (cell, student) pair that clashes with a sibling track.
-  // `byChip` ("cellId|studentId" → sibling tracks) marks the chips; `groups`
-  // folds a clash down to one line per (day, slot, room, student) for the
-  // banners, since every clash touches at least two cells.
+  // Every staged (cell, student) pair that is double-booked. `byChip`
+  // ("cellId|studentId" → other places) marks the chips; `groups` folds a clash
+  // down to one line per (day, slot, student) for the banners, since every
+  // clash touches at least two cells.
   const clashes = (() => {
     const byChip = new Map()
     const groups = new Map()
-    const trackOrder = (label) => trackCols.findIndex(c => c.trackLabel === label)
     for (const [cellId, cell] of Object.entries(staged)) {
       for (const id of cell.ids) {
-        const others = roomClashesFor(cell.day, cell.slot, cell.col, id)
+        const others = studentClashesFor(cell.day, cell.slot, cell.col, id)
         if (!others.length) continue
         byChip.set(`${cellId}|${id}`, others)
-        const gk = `${dayKey(cell.day)}/${cell.slot.key}/${cell.col.roomKey}|${id}`
-        const g = groups.get(gk) || { day: cell.day, slot: cell.slot, roomLabel: cell.col.roomLabel, id, tracks: new Set() }
-        g.tracks.add(cell.col.trackLabel)
-        for (const o of others) g.tracks.add(o.trackLabel)
+        const gk = `${dayKey(cell.day)}/${cell.slot.key}|${id}`
+        const g = groups.get(gk) || { day: cell.day, slot: cell.slot, id, places: new Set() }
+        g.places.add(colWhere(cell.col))
+        for (const o of others) g.places.add(o.where)
         groups.set(gk, g)
       }
     }
-    return {
-      byChip,
-      groups: [...groups.values()].map(g => ({
-        ...g, tracks: [...g.tracks].sort((a, b) => trackOrder(a) - trackOrder(b)),
-      })),
-    }
+    return { byChip, groups: [...groups.values()].map(g => ({ ...g, places: [...g.places].sort() })) }
   })()
 
-  // The toast fired at the drop/paste that caused a clash: who, which sibling
-  // track, and a one-click Undo that lifts them back out of THIS cell.
-  const warnRoomClashes = (day, slot, col, ids) => {
+  // The toast fired at the drop/paste that caused a clash: who, where else, and
+  // a one-click Undo that lifts them back out of THIS cell.
+  const warnStudentClashes = (day, slot, col, ids) => {
     const hits = ids
-      .map(id => ({ id, others: roomClashesFor(day, slot, col, id) }))
+      .map(id => ({ id, others: studentClashesFor(day, slot, col, id) }))
       .filter(h => h.others.length)
     if (!hits.length) return
     const cellId = `${dayKey(day)}/${slot.key}/${col.roomName}`
-    const tracks = [...new Set(hits.flatMap(h => h.others.map(o => o.trackLabel)))].join(' & ')
+    const places = [...new Set(hits.flatMap(h => h.others.map(o => o.where)))].join(' & ')
     setNotice({
-      text: `${hits.map(h => chipName(h.id)).join(', ')} ${hits.length > 1 ? 'are' : 'is'} already in ${col.roomLabel} · ${tracks} for ${whenLabel(day, slot)} — a student can attend only one track of a room.`,
+      text: `${hits.map(h => chipName(h.id)).join(', ')} ${hits.length > 1 ? 'are' : 'is'} already in ${places} for ${whenLabel(day, slot)} — a student can attend only one class at a time.`,
       undo: () => hits.forEach(h => unstage(cellId, h.id)),
     })
   }
+
+  const mentorClashesFor = (day, slot, col, hostId, cellId) => {
+    if (!hostId) return []
+    const hid = String(hostId)
+    const [s, e] = slotWindow(day, slot)
+    const out = []
+    const seen = new Set()
+    for (const c of active) {
+      if (String(c.host?.userId || '') !== hid || c.room?.key === col.roomKey || !overlaps(c, s, e)) continue
+      const k = trackKeyOf(c)
+      if (!seen.has(k)) { seen.add(k); out.push({ where: classWhere(c) }) }
+    }
+    for (const p of pendingCells) {
+      if (p.cellId === cellId || p.hostUserId !== hid || p.col.roomKey === col.roomKey) continue
+      if (!sameSlot(p, day, slot)) continue
+      const k = colKey(p.col)
+      if (!seen.has(k)) { seen.add(k); out.push({ where: colWhere(p.col) }) }
+    }
+    return out
+  }
+  const mentorClashText = (name, list) =>
+    `${name || 'This mentor'} is also teaching ${wheres(list)} at this time — a mentor can be in only one room.`
 
   useEffect(() => {
     if (!notice) return
@@ -548,7 +588,7 @@ export default function SchedulerBoard({ rooms, hallRooms, hosts, classes, onCha
       return { ...prev, [cellId]: { ...cell, ids: [...cell.ids, id] } }
     })
     // A fresh drop into a second track of this room → say so right away.
-    if (!alreadyStaged) warnRoomClashes(day, slot, col, [id])
+    if (!alreadyStaged) warnStudentClashes(day, slot, col, [id])
     // Dropped into a cell that hasn't been set up yet → ask for mentor and
     // chapter right away instead of waiting for Review & save to complain.
     if (!existing && !cellMetaReady(cellId)) openSetup(day, slot, col)
@@ -595,7 +635,7 @@ export default function SchedulerBoard({ rooms, hallRooms, hosts, classes, onCha
           for (const id of toAdd) if (!merged.includes(id)) merged.push(id)
           return { ...prev, [cellId]: { ...cell, ids: merged } }
         })
-        warnRoomClashes(day, slot, col, toAdd)
+        warnStudentClashes(day, slot, col, toAdd)
       }
     }
     if (existing || cellMetaReady(cellId)) return
@@ -752,6 +792,39 @@ export default function SchedulerBoard({ rooms, hallRooms, hosts, classes, onCha
     return null
   }
 
+  // Cells that will become NEW classes on save, with the mentor each will get
+  // (its own pick, or the room's locked mentor). Configured-but-empty cells
+  // count too — the pick is just as real.
+  const pendingCells = (() => {
+    const out = []
+    for (const cellId of new Set([...Object.keys(staged), ...Object.keys(newMeta)])) {
+      const c = staged[cellId] || newMeta[cellId]
+      if (!c?.col || !c?.day || !c?.slot) continue
+      if (cellClass(c.day, c.slot, c.col)) continue
+      const hostUserId = roomLockedHost(cellId, c)?.id || newMeta[cellId]?.hostUserId
+      if (hostUserId) out.push({ cellId, day: c.day, slot: c.slot, col: c.col, hostUserId: String(hostUserId) })
+    }
+    return out
+  })()
+
+  // The classes in OTHER rooms (saved, or about to be) this mentor already has
+  // at the same time. Both tracks of one classroom are fine — that's how
+  // classrooms work.
+  // One banner line per (day, slot, mentor) among the classes about to be made.
+  const mentorGroups = (() => {
+    const groups = new Map()
+    for (const p of pendingCells) {
+      const others = mentorClashesFor(p.day, p.slot, p.col, p.hostUserId, p.cellId)
+      if (!others.length) continue
+      const gk = `${dayKey(p.day)}/${p.slot.key}|${p.hostUserId}`
+      const g = groups.get(gk) || { day: p.day, slot: p.slot, hostUserId: p.hostUserId, places: new Set() }
+      g.places.add(colWhere(p.col))
+      for (const o of others) g.places.add(o.where)
+      groups.set(gk, g)
+    }
+    return [...groups.values()].map(g => ({ ...g, places: [...g.places].sort() }))
+  })()
+
   const openReview = () => {
     // Prefill title + host for every cell that will become a NEW class.
     const meta = {}
@@ -760,11 +833,12 @@ export default function SchedulerBoard({ rooms, hallRooms, hosts, classes, onCha
         const locked = roomLockedHost(cellId, cell)
         meta[cellId] = newMeta[cellId] || {
           title: `${cell.col.roomLabel} · ${cell.col.trackLabel} — ${cell.slot.name}`,
-          hostUserId: locked ? locked.id : (hosts?.[0]?.id ? String(hosts[0].id) : ''),
+          hostUserId: locked ? locked.id : (mentorHosts[0]?.id ? String(mentorHosts[0].id) : ''),
         }
       }
     }
     setNewMeta(meta)
+    setError('')
     setReview(true)
   }
 
@@ -779,7 +853,7 @@ export default function SchedulerBoard({ rooms, hallRooms, hosts, classes, onCha
           const merged = [...new Set([...(existing.allowedStudents || []).map(String), ...ids])]
           await saveWithClashCheck((extra) => apiFetch(`/api/live-classes/manage/${existing._id}/students`, {
             method: 'PUT', body: JSON.stringify({ studentIds: merged, ...extra }),
-          }))
+          }), cellLabel(cell))
         } else {
           const meta = newMeta[cellId] || {}
           const locked = roomLockedHost(cellId, cell)
@@ -799,7 +873,7 @@ export default function SchedulerBoard({ rooms, hallRooms, hosts, classes, onCha
               unitId: meta.unitId || undefined,
               ...extra,
             }),
-          }))
+          }), cellLabel(cell))
         }
         setStaged(prev => { const next = { ...prev }; delete next[cellId]; return next })
       } catch (err) {
@@ -1102,16 +1176,16 @@ export default function SchedulerBoard({ rooms, hallRooms, hosts, classes, onCha
                               // A double booking must never hide behind the fold — the
                               // head-count goes red so the warning survives collapsing.
                               const savedClash =
-                                savedIds.some(id => roomClashesFor(day, slot, col, id).length > 0)
+                                savedIds.some(id => studentClashesFor(day, slot, col, id).length > 0)
                               // While a student is being dragged, the cells
                               // outside their slot availability fade so the
                               // right ones stand out. The drop still works —
                               // whether to book them anyway is the admin's call.
                               const dragged = dragId ? byId.get(dragId) : null
                               const offSlot = !!dragged && !past && !isAvailableFor(dragged, day, slot.key)
-                              // Dropping here would put them in a second track
-                              // of this room for the slot → the target goes red.
-                              const clashDrop = !!dragged && !past && roomClashesFor(day, slot, col, dragId).length > 0
+                              // Dropping here would put them in a second class
+                              // at the same time → the target goes red.
+                              const clashDrop = !!dragged && !past && studentClashesFor(day, slot, col, dragId).length > 0
                               return (
                                 <td key={col.roomName} className="align-top"
                                   onDragOver={e => { if (past) return; e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; setOverCell(cellId) }}
@@ -1165,6 +1239,10 @@ export default function SchedulerBoard({ rooms, hallRooms, hosts, classes, onCha
                                             <CellHead
                                               subject={cls.subject?.name} chapter={cls.chapter?.name} unit={cls.unit?.name}
                                               mentor={cls.host?.name} slotTitle={cls.title} live={cls.status === 'live'}
+                                              mentorWarn={(() => {
+                                                const mc = mentorClashesFor(day, slot, col, cls.host?.userId, cellId)
+                                                return mc.length ? mentorClashText(cls.host?.name, mc) : ''
+                                              })()}
                                               roster={savedIds.length > 0 ? (
                                                 // A span, not a button — the whole head is already
                                                 // the toggle, and a button inside a button is invalid.
@@ -1196,6 +1274,10 @@ export default function SchedulerBoard({ rooms, hallRooms, hosts, classes, onCha
                                               <CellHead
                                                 subject={subj?.name} chapter={chap?.name} unit={unit?.name}
                                                 mentor={hostName(m.hostUserId)}
+                                                mentorWarn={(() => {
+                                                  const mc = mentorClashesFor(day, slot, col, m.hostUserId, cellId)
+                                                  return mc.length ? mentorClashText(hostName(m.hostUserId), mc) : ''
+                                                })()}
                                                 slotTitle={m.title || `${col.roomLabel} · ${col.trackLabel} — ${slot.name}`} />
                                             </button>
                                           )
@@ -1205,9 +1287,9 @@ export default function SchedulerBoard({ rooms, hallRooms, hosts, classes, onCha
                                             // Saved students are checked too, so an old
                                             // double booking (or a staged sibling drop)
                                             // shows up on both chips, not just the new one.
-                                            const dup = roomClashesFor(day, slot, col, id)
+                                            const dup = studentClashesFor(day, slot, col, id)
                                             const dupTitle = dup.length
-                                              ? `Also in ${dup.map(d => d.trackLabel).join(' & ')} of ${col.roomLabel} in this slot — a student can attend only one track`
+                                              ? `Also in ${wheres(dup)} at this time — a student can attend only one class at a time`
                                               : undefined
                                             return (
                                               <span key={String(id)} title={dupTitle}
@@ -1230,7 +1312,7 @@ export default function SchedulerBoard({ rooms, hallRooms, hosts, classes, onCha
                                             const off = !!st && !isAvailableFor(st, day, slot.key)
                                             const dup = clashes.byChip.get(`${cellId}|${id}`) || []
                                             const title = dup.length
-                                              ? `Also in ${dup.map(d => d.trackLabel).join(' & ')} of ${col.roomLabel} in this slot — a student can attend only one track`
+                                              ? `Also in ${wheres(dup)} at this time — a student can attend only one class at a time`
                                               : off ? "Outside this student's slot availability" : undefined
                                             return (
                                               <span key={id} title={title}
@@ -1488,8 +1570,14 @@ export default function SchedulerBoard({ rooms, hallRooms, hosts, classes, onCha
           </span>
           {clashes.groups.length > 0 && (
             <span className="text-xs font-bold text-red-600 bg-red-50 border border-red-200 px-2 py-1 rounded-lg"
-              title={clashes.groups.map(g => `${chipName(g.id)} · ${whenLabel(g.day, g.slot)} · ${g.roomLabel} ${g.tracks.join(' & ')}`).join('\n')}>
-              ⚠ {clashes.groups.length} in two tracks of one room
+              title={clashes.groups.map(g => `${chipName(g.id)} · ${whenLabel(g.day, g.slot)} · ${g.places.join(' & ')}`).join('\n')}>
+              ⚠ {clashes.groups.length} student{clashes.groups.length > 1 ? 's' : ''} in two classes at once
+            </span>
+          )}
+          {mentorGroups.length > 0 && (
+            <span className="text-xs font-bold text-red-600 bg-red-50 border border-red-200 px-2 py-1 rounded-lg"
+              title={mentorGroups.map(g => `${hostName(g.hostUserId)} · ${whenLabel(g.day, g.slot)} · ${g.places.join(' & ')}`).join('\n')}>
+              ⚠ {mentorGroups.length} mentor{mentorGroups.length > 1 ? 's' : ''} in two rooms at once
             </span>
           )}
           <button onClick={() => { setStaged({}); setNotice(null) }}
@@ -1524,7 +1612,7 @@ export default function SchedulerBoard({ rooms, hallRooms, hosts, classes, onCha
                   onChange={e => patch({ hostUserId: e.target.value })}
                   className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg bg-white outline-none focus:ring-2 focus:ring-indigo-400 disabled:bg-gray-50 disabled:text-gray-500">
                   <option value="">Select a mentor…</option>
-                  {(hosts || []).map(h => <option key={h.id} value={String(h.id)}>{h.name} ({h.role})</option>)}
+                  {mentorHosts.map(h => <option key={h.id} value={String(h.id)}>{h.name}</option>)}
                   {locked && !(hosts || []).some(h => String(h.id) === locked.id) && (
                     <option value={locked.id}>{locked.name}</option>
                   )}
@@ -1534,6 +1622,13 @@ export default function SchedulerBoard({ rooms, hallRooms, hosts, classes, onCha
                     🔒 {setup.col.roomLabel} already has <b>{locked.name}</b> in this slot ({locked.from}) — one room uses one mentor.
                   </p>
                 )}
+                {(() => {
+                  const hid = locked ? locked.id : setup.hostUserId
+                  const mc = mentorClashesFor(setup.day, setup.slot, setup.col, hid, setup.cellId)
+                  return mc.length > 0 && (
+                    <p className="text-[11px] font-semibold text-red-600">⚠ {mentorClashText(hostName(hid), mc)}</p>
+                  )
+                })()}
 
                 <select value={setup.subjectId}
                   onChange={e => patch({ subjectId: e.target.value, chapterId: '', unitId: '' })}
@@ -1597,22 +1692,40 @@ export default function SchedulerBoard({ rooms, hallRooms, hosts, classes, onCha
               {stagedCount} student{stagedCount > 1 ? 's' : ''} across {Object.keys(staged).length} slot{Object.keys(staged).length > 1 ? 's' : ''} — nothing is booked until you confirm.
             </p>
 
-            {/* Same student, two tracks of one room, same slot — listed up top
-                so it can't be missed, with the cells below carrying the detail. */}
+            {/* Same student in two classes at once, or a mentor in two rooms at
+                once — listed up top so it can't be missed, with the cells below
+                carrying the detail. */}
             {clashes.groups.length > 0 && (
               <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-3 py-2.5">
                 <p className="text-xs font-bold text-red-700 mb-1">
-                  ⚠ {clashes.groups.length} student{clashes.groups.length > 1 ? 's' : ''} booked into two tracks of the same room
+                  ⚠ {clashes.groups.length} student{clashes.groups.length > 1 ? 's' : ''} booked into two classes at the same time
                 </p>
                 <ul className="text-[11px] text-red-700 space-y-0.5">
                   {clashes.groups.map((g, i) => (
                     <li key={i}>
-                      <b>{chipName(g.id)}</b> · {whenLabel(g.day, g.slot)} · {g.roomLabel} {g.tracks.join(' & ')}
+                      <b>{chipName(g.id)}</b> · {whenLabel(g.day, g.slot)} · {g.places.join(' & ')}
                     </li>
                   ))}
                 </ul>
                 <p className="text-[10px] text-red-600 mt-1.5">
-                  A student can attend only one track of a room. Go Back and remove them from one track (×), or confirm anyway.
+                  A student can attend only one class at a time. Go Back and remove them from one (×), or confirm anyway.
+                </p>
+              </div>
+            )}
+            {mentorGroups.length > 0 && (
+              <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-3 py-2.5">
+                <p className="text-xs font-bold text-red-700 mb-1">
+                  ⚠ {mentorGroups.length} mentor{mentorGroups.length > 1 ? 's' : ''} booked in two rooms at the same time
+                </p>
+                <ul className="text-[11px] text-red-700 space-y-0.5">
+                  {mentorGroups.map((g, i) => (
+                    <li key={i}>
+                      <b>{hostName(g.hostUserId)}</b> · {whenLabel(g.day, g.slot)} · {g.places.join(' & ')}
+                    </li>
+                  ))}
+                </ul>
+                <p className="text-[10px] text-red-600 mt-1.5">
+                  A mentor can switch between the two tracks of one room, but can't be in two rooms. Pick another mentor, or confirm anyway.
                 </p>
               </div>
             )}
@@ -1632,10 +1745,10 @@ export default function SchedulerBoard({ rooms, hallRooms, hosts, classes, onCha
                     {(() => {
                       const dup = cell.ids.filter(id => clashes.byChip.has(`${cellId}|${id}`))
                       if (!dup.length) return null
-                      const tracks = [...new Set(dup.flatMap(id => clashes.byChip.get(`${cellId}|${id}`).map(d => d.trackLabel)))]
+                      const places = [...new Set(dup.flatMap(id => clashes.byChip.get(`${cellId}|${id}`).map(d => d.where)))]
                       return (
                         <p className="text-[10px] text-red-600 mb-2">
-                          ⚠ Also in {cell.col.roomLabel} · {tracks.join(' & ')} this slot: {dup.map(chipName).join(', ')} — one student, one track.
+                          ⚠ Also in {places.join(' & ')} at this time: {dup.map(chipName).join(', ')} — one student, one class.
                         </p>
                       )
                     })()}
@@ -1672,8 +1785,8 @@ export default function SchedulerBoard({ rooms, hallRooms, hosts, classes, onCha
                               disabled={!!locked}
                               onChange={e => setMeta({ hostUserId: e.target.value })}
                               className="px-3 py-2 text-xs border border-gray-200 rounded-lg bg-white outline-none focus:ring-2 focus:ring-indigo-400 disabled:bg-gray-50 disabled:text-gray-500">
-                              <option value="">Select a host…</option>
-                              {(hosts || []).map(h => <option key={h.id} value={h.id}>{h.name} ({h.role})</option>)}
+                              <option value="">Select a mentor…</option>
+                              {mentorHosts.map(h => <option key={h.id} value={h.id}>{h.name}</option>)}
                               {locked && !(hosts || []).some(h => String(h.id) === locked.id) && (
                                 <option value={locked.id}>{locked.name}</option>
                               )}
@@ -1684,6 +1797,13 @@ export default function SchedulerBoard({ rooms, hallRooms, hosts, classes, onCha
                               🔒 {cell.col.roomLabel} already has <b>{locked.name}</b> in this slot ({locked.from}) — one room uses one mentor.
                             </p>
                           )}
+                          {(() => {
+                            const hid = locked ? locked.id : meta.hostUserId
+                            const mc = mentorClashesFor(cell.day, cell.slot, cell.col, hid, cellId)
+                            return mc.length > 0 && (
+                              <p className="text-[10px] font-semibold text-red-600">⚠ {mentorClashText(hostName(hid), mc)}</p>
+                            )
+                          })()}
                           {/* What this class teaches: subject → chapter, unit optional */}
                           <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                             <select value={meta.subjectId || ''}
@@ -1718,6 +1838,13 @@ export default function SchedulerBoard({ rooms, hallRooms, hosts, classes, onCha
               })}
             </div>
 
+            {/* A failed or declined save must show HERE — the page-level error
+                line sits behind this window's overlay. */}
+            {error && !saving && (
+              <p role="status" className="mt-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                ⚠ {error}
+              </p>
+            )}
             <div className="flex justify-end gap-2 mt-4">
               <button onClick={() => setReview(false)} disabled={saving}
                 className="px-4 py-2 rounded-xl border border-gray-200 text-gray-500 text-sm font-semibold hover:bg-gray-50">
