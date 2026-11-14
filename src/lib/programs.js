@@ -56,3 +56,25 @@ export function matchesProgram(student, value) {
   const mine = student.programs || []
   return value === NO_PROGRAM ? mine.length === 0 : mine.includes(value)
 }
+
+// Class status — Active / Inactive / Completed, for students holding the Class
+// program only (User.classStatus; null = not set). Same keys as
+// server/utils/programs.js CLASS_STATUSES. Set from the Users list.
+export const CLASS_PROGRAM = 'class'
+export const CLASS_STATUSES = [
+  { key: 'active',    label: 'Active',    className: 'bg-emerald-50 text-emerald-700 border-emerald-200', dot: 'bg-emerald-500' },
+  { key: 'inactive',  label: 'Inactive',  className: 'bg-gray-100 text-gray-600 border-gray-300', dot: 'bg-gray-400' },
+  { key: 'completed', label: 'Completed', className: 'bg-blue-50 text-blue-700 border-blue-200', dot: 'bg-blue-500' },
+]
+export const isClassStudent = (u) => !u.isAdmin && !u.isMentor && (u.programs || []).includes(CLASS_PROGRAM)
+export const classStatusByKey = (key) => CLASS_STATUSES.find(s => s.key === key) || null
+
+// Student status — how a Class student is doing / whether to chase them
+// (User.studentStatus; null = not set). Class students only, admin-only. Same
+// keys as server/utils/programs.js STUDENT_STATUSES.
+export const STUDENT_STATUSES = [
+  { key: 'top',          label: 'Top',             className: 'bg-amber-50 text-amber-700 border-amber-300', dot: 'bg-amber-500' },
+  { key: 'follow_up',    label: 'Follow-up',       className: 'bg-rose-50 text-rose-700 border-rose-200', dot: 'bg-rose-500' },
+  { key: 'no_follow_up', label: 'No follow-up',    className: 'bg-gray-100 text-gray-600 border-gray-300', dot: 'bg-gray-400' },
+]
+export const studentStatusByKey = (key) => STUDENT_STATUSES.find(s => s.key === key) || null

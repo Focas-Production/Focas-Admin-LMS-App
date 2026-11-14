@@ -22,6 +22,7 @@
 // note instead.
 
 import { upcomingAttempts } from './ca'
+import { CLASS_STATUSES, STUDENT_STATUSES, isClassStudent } from './programs'
 
 export const CA_LEVELS = ['Foundation', 'Intermediate', 'Final']
 
@@ -167,6 +168,23 @@ export const FIELD_DEFS = [
       { key: 'isnt',    label: 'is none of' },
       { key: 'not_set', label: 'is not set' },
     ] },
+  // Class status (Active / Inactive / Completed) and Student status (Top /
+  // Follow-up / No follow-up) — only Class students carry them. Every student
+  // reads as one chip: a status, 'not_set' (Class student, nothing picked yet)
+  // or 'not_class' (everyone else), so "is Active" never picks up a
+  // Workout-only student. "Not set" is a chip, not the "is not set" operator.
+  ...[
+    { key: 'classStatus',   label: 'Class status',   list: CLASS_STATUSES },
+    { key: 'studentStatus', label: 'Student status', list: STUDENT_STATUSES },
+  ].map(f => ({
+    key: f.key, label: f.label, kind: 'enum', ops: ENUM_OPS.filter(o => o.key !== 'not_set'),
+    options: [
+      ...f.list.map(s => ({ key: s.key, label: s.label })),
+      { key: 'not_set',   label: 'Not set' },
+      { key: 'not_class', label: 'Not a Class student' },
+    ],
+    get: s => isClassStudent(s) ? (s[f.key] || 'not_set') : 'not_class',
+  })),
   { key: 'enrolledFor', label: 'Enrolled for',   kind: 'enrolled',
     options: ENROLMENT_OPTIONS, ops: ENUM_OPS.filter(o => o.key !== 'not_set') },
   { key: 'subject',    label: 'Studies subject', kind: 'subject',

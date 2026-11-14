@@ -4,7 +4,7 @@ import { apiFetch } from '../../api'
 import { CA_LEVELS, CA_GROUPS, groupLabel, ATTEMPT_MONTHS, upcomingAttempts } from '../../lib/ca'
 import SlotEditorModal from '../../components/SlotEditorModal'
 import { availabilityLabel, hasSlotAvailability } from '../../lib/rosterFilter'
-import { usePrograms, programNames, programFilterOptions } from '../../lib/programs'
+import { usePrograms, programNames, programFilterOptions, CLASS_STATUSES, isClassStudent, classStatusByKey, STUDENT_STATUSES, studentStatusByKey } from '../../lib/programs'
 import ParentContactModal from '../../components/ParentContactModal'
 import { showPhone } from '../../lib/parentReport'
 
@@ -974,6 +974,16 @@ function UserDetailDrawer({ user, onClose }) {
                 {programNames(user.programs, programs) || <span className="text-gray-400">Not set</span>}
               </Row>
             )}
+            {isClassStudent(user) && (
+              <Row label="Class status">
+                {classStatusByKey(user.classStatus)?.label || <span className="text-gray-400">Not set</span>}
+              </Row>
+            )}
+            {isClassStudent(user) && (
+              <Row label="Student status">
+                {studentStatusByKey(user.studentStatus)?.label || <span className="text-gray-400">Not set</span>}
+              </Row>
+            )}
             {!user.isAdmin && !user.isMentor && (user.caLevel === 'Foundation' || user.parent?.phone) && (
               <Row label="Parent">
                 {user.parent?.phone
@@ -1356,6 +1366,112 @@ function MentorSyllabusModal({ mentor, onClose }) {
   )
 }
 
+// A Class student's status chip (class status / student status). Click →
+// small menu (position:fixed, like MenuButton, so the table's scroll box can't
+// clip it); picking saves at once. `field` = the User field, `path` = the PATCH
+// endpoint suffix, `options` = the fixed list from lib/programs.js
+// (key, label, className, dot), `label` = "Class status" / "Student status".
+function StatusPicker({ user, field, path, options, label, onSaved }) {
+  const [value,  setValue]  = useState(user[field] || '')
+  const [saving, setSaving] = useState(false)
+  const [pos,    setPos]    = useState(null)
+  const btnRef = useRef(null)
+  useEffect(() => { setValue(user[field] || '') }, [user, field])
+  const current = options.find(o => o.key === value)
+
+  useEffect(() => {
+    if (!pos) return
+    const close = () => setPos(null)
+    const onKey = (e) => { if (e.key === 'Escape') close() }
+    window.addEventListener('scroll', close, true)
+    window.addEventListener('resize', close)
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('scroll', close, true)
+      window.removeEventListener('resize', close)
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [pos])
+
+  function toggle(e) {
+    e.stopPropagation()
+    if (pos) return setPos(null)
+    const r = btnRef.current.getBoundingClientRect()
+    const menuH = (options.length + (current ? 2 : 1)) * 34 + 16
+    const top = r.bottom + 4 + menuH > window.innerHeight ? r.top - 4 - menuH : r.bottom + 4
+    setPos({ top, left: r.left })
+  }
+
+  async function pick(next) {
+    setPos(null)
+    if (next === value) return
+    const before = value
+    setValue(next)
+    setSaving(true)
+    try {
+      await apiFetch(`/api/admin/users/${user._id}/${path}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status: next || null }),
+      })
+      onSaved?.()
+    } catch (err) {
+      setValue(before)
+      alert(err?.message || `Could not save the ${label.toLowerCase()}`)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <>
+      <button ref={btnRef} type="button" onClick={toggle} disabled={saving}
+        title={`${label}: ${current ? current.label : 'not set'} — click to change`}
+        aria-haspopup="menu" aria-expanded={!!pos}
+        className={`w-[8.5rem] inline-flex items-center gap-1.5 h-6 pl-2 pr-1.5 rounded-md border text-[11px] font-semibold whitespace-nowrap transition-colors disabled:opacity-60 disabled:cursor-wait ${
+          current ? current.className : 'bg-white text-gray-400 border-dashed border-gray-300 hover:text-gray-600 hover:border-gray-400'}`}>
+        {current
+          ? <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${current.dot}`} />
+          : <svg className="w-3 h-3 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 6v12m6-6H6" /></svg>}
+        <span className="flex-1 text-left truncate">{current ? current.label : label}</span>
+        <svg className="w-3 h-3 flex-shrink-0 opacity-60" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+      {pos && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={(e) => { e.stopPropagation(); setPos(null) }} />
+          <div role="menu" onClick={e => e.stopPropagation()}
+            className="fixed z-50 w-48 bg-white rounded-xl shadow-lg border border-gray-100 py-1"
+            style={{ top: pos.top, left: pos.left }}>
+            <p className="px-3 pt-1.5 pb-1 text-[10px] font-semibold uppercase tracking-wide text-gray-400">{label}</p>
+            {options.map(o => (
+              <button key={o.key} type="button" role="menuitemradio" aria-checked={o.key === value} onClick={() => pick(o.key)}
+                className={`w-full flex items-center gap-2 px-3 py-2 text-xs font-semibold text-left hover:bg-gray-50 ${o.key === value ? 'text-gray-900' : 'text-gray-600'}`}>
+                <span className={`w-2 h-2 rounded-full ${o.dot}`} />
+                <span className="flex-1">{o.label}</span>
+                {o.key === value && (
+                  <svg className="w-3.5 h-3.5 text-indigo-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+                  </svg>
+                )}
+              </button>
+            ))}
+            {current && (
+              <button type="button" role="menuitem" onClick={() => pick('')}
+                className="w-full flex items-center gap-2 px-3 py-2 mt-1 border-t border-gray-100 text-xs font-semibold text-left text-gray-400 hover:bg-gray-50 hover:text-gray-600">
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+                Clear
+              </button>
+            )}
+          </div>
+        </>
+      )}
+    </>
+  )
+}
+
 export default function UsersPage() {
   const navigate = useNavigate()
   const [users,   setUsers]   = useState([])
@@ -1365,6 +1481,8 @@ export default function UsersPage() {
   const [search,  setSearch]  = useState('')
   const [role,    setRole]    = useState('')
   const [program, setProgram] = useState('')   // program key | 'none' | '' (any)
+  const [classStatus, setClassStatus] = useState('')   // status key | 'none' | '' (any) — Class students only
+  const [studentStatus, setStudentStatus] = useState('')   // same, for the student status
   const programs = usePrograms()
   const [level,   setLevel]   = useState('')
   const [batch,   setBatch]   = useState('')
@@ -1387,7 +1505,7 @@ export default function UsersPage() {
     const query = new URLSearchParams({
       page, limit: pageSize,
       ...(search && { search }), ...(role && { role }), ...(program && { program }),
-      ...(level && { level }), ...(batch && { batch }),
+      ...(level && { level }), ...(batch && { batch }), ...(classStatus && { classStatus }), ...(studentStatus && { studentStatus }),
     })
     apiFetch(`/api/admin/users?${query}`)
       .then(d => { setUsers(d.users || []); setTotal(d.pagination?.total || 0); setCounts(d.counts || null); setBatches(d.batches || []) })
@@ -1395,7 +1513,7 @@ export default function UsersPage() {
       .finally(() => setLoading(false))
   }
 
-  useEffect(() => { load() }, [page, pageSize, search, role, program, level, batch])
+  useEffect(() => { load() }, [page, pageSize, search, role, program, level, batch, classStatus, studentStatus])
   // AdminLayout's <main> is the scroller — jump back to the top on a new page.
   useEffect(() => { document.querySelector('main')?.scrollTo({ top: 0 }) }, [page, pageSize])
 
@@ -1454,6 +1572,22 @@ export default function UsersPage() {
           <option value="">Any program</option>
           {programFilterOptions(programs).map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
+        {/* Class status only exists on Class students, so any pick here
+            narrows the list to them. */}
+        <select value={classStatus} onChange={e => { setClassStatus(e.target.value); setPage(1) }}
+          className={`text-xs font-semibold px-2.5 py-1.5 rounded-lg border outline-none focus:ring-2 focus:ring-indigo-400 ${
+            classStatus ? 'bg-indigo-50 text-indigo-700 border-indigo-400' : 'bg-white text-gray-600 border-gray-200'}`}>
+          <option value="">Any class status</option>
+          {CLASS_STATUSES.map(st => <option key={st.key} value={st.key}>Class · {st.label}</option>)}
+          <option value="none">Class · status not set</option>
+        </select>
+        <select value={studentStatus} onChange={e => { setStudentStatus(e.target.value); setPage(1) }}
+          className={`text-xs font-semibold px-2.5 py-1.5 rounded-lg border outline-none focus:ring-2 focus:ring-indigo-400 ${
+            studentStatus ? 'bg-indigo-50 text-indigo-700 border-indigo-400' : 'bg-white text-gray-600 border-gray-200'}`}>
+          <option value="">Any student status</option>
+          {STUDENT_STATUSES.map(st => <option key={st.key} value={st.key}>{st.label}</option>)}
+          <option value="none">Student status not set</option>
+        </select>
         <select value={batch} onChange={e => { setBatch(e.target.value); setPage(1) }}
           className={`text-xs font-semibold px-2.5 py-1.5 rounded-lg border outline-none focus:ring-2 focus:ring-indigo-400 ${
             batch ? 'bg-indigo-50 text-indigo-700 border-indigo-400' : 'bg-white text-gray-600 border-gray-200'}`}>
@@ -1461,8 +1595,8 @@ export default function UsersPage() {
           {batches.map(b => <option key={b} value={b}>{b}</option>)}
           <option value="none">Batch not set</option>
         </select>
-        {(program || level || batch || search) && (
-          <button onClick={() => { setProgram(''); setLevel(''); setBatch(''); setSearch(''); setPage(1) }}
+        {(program || level || batch || classStatus || studentStatus || search) && (
+          <button onClick={() => { setProgram(''); setLevel(''); setBatch(''); setClassStatus(''); setStudentStatus(''); setSearch(''); setPage(1) }}
             className="flex items-center gap-1 text-xs font-semibold px-2.5 py-1.5 rounded-lg text-gray-500 border border-gray-200 bg-white hover:bg-gray-50 hover:text-gray-700 transition-colors">
             <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
@@ -1478,8 +1612,8 @@ export default function UsersPage() {
             <tr className="border-b border-gray-100 text-xs font-semibold text-gray-400 uppercase tracking-wide">
               <th className="text-left px-5 py-3.5">Name</th>
               <th className="text-left px-5 py-3.5">Phone</th>
-              <th className="text-left px-5 py-3.5">Email</th>
               <th className="text-left px-5 py-3.5">Role</th>
+              <th className="text-left px-5 py-3.5">Status</th>
               <th className="text-left px-5 py-3.5">Joined</th>
               <th className="px-5 py-3.5" />
             </tr>
@@ -1508,26 +1642,41 @@ export default function UsersPage() {
                     </div>
                   </td>
                   <td className="px-5 py-3.5 text-gray-600">{u.phoneNumber || '—'}</td>
-                  <td className="px-5 py-3.5 text-gray-600 max-w-[180px] truncate">{u.email || '—'}</td>
-                  <td className="px-5 py-3.5">
-                    <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
-                      u.isAdmin ? 'bg-red-100 text-red-600' : u.isMentor ? 'bg-purple-100 text-purple-600' : 'bg-gray-100 text-gray-600'
-                    }`}>
-                      {u.isAdmin ? 'Admin' : u.isMentor ? 'Mentor' : 'Student'}
-                    </span>
-                    {!u.isAdmin && !u.isMentor && programNames(u.programs, programs) && (
-                      <span className="block text-[10px] font-semibold text-amber-700 mt-1">
-                        {programNames(u.programs, programs)}
+                  <td className="px-5 py-3.5 select-none">
+                    {/* Role + what they came for on one line, enrollment under it. */}
+                    <div className="flex flex-wrap items-center gap-1">
+                      <span className={`text-xs font-medium px-2 py-0.5 rounded-md ${
+                        u.isAdmin ? 'bg-red-100 text-red-600' : u.isMentor ? 'bg-purple-100 text-purple-600' : 'bg-gray-100 text-gray-600'
+                      }`}>
+                        {u.isAdmin ? 'Admin' : u.isMentor ? 'Mentor' : 'Student'}
                       </span>
-                    )}
+                      {!u.isAdmin && !u.isMentor && (programs || []).filter(p => (u.programs || []).includes(p.key)).map(p => (
+                        <span key={p.key} className="text-[11px] font-medium px-2 py-0.5 rounded-md bg-amber-50 text-amber-700 border border-amber-200">
+                          {p.name}
+                        </span>
+                      ))}
+                    </div>
                     {!u.isAdmin && !u.isMentor && (u.caLevel || u.caSubjects?.length > 0) && (
-                      <span className="block text-[10px] text-indigo-500 mt-1">
+                      <p className="text-[11px] text-gray-500 mt-1.5">
                         {u.caLevel}
                         {u.caSubjects?.length > 0
                           ? `${u.caLevel ? ' · ' : ''}${u.caSubjects.length} subject${u.caSubjects.length !== 1 ? 's' : ''}`
                           : u.caGroup ? ` · ${groupLabel(u.caGroup)}` : ''}
                         {u.caAttempt ? ` · ${u.caAttempt}` : ''}
-                      </span>
+                      </p>
+                    )}
+                  </td>
+                  {/* Class + student status — Class students only. */}
+                  <td className="px-5 py-3.5 select-none" onClick={e => e.stopPropagation()}>
+                    {isClassStudent(u) ? (
+                      <div className="flex flex-col items-start gap-1.5">
+                        <StatusPicker user={u} field="classStatus" path="class-status" options={CLASS_STATUSES}
+                          label="Class status" onSaved={load} />
+                        <StatusPicker user={u} field="studentStatus" path="student-status" options={STUDENT_STATUSES}
+                          label="Student status" onSaved={load} />
+                      </div>
+                    ) : (
+                      <span className="text-gray-300" title={u.isAdmin || u.isMentor ? '' : 'Only Class students have a status — tick Class in Course → Program'}>—</span>
                     )}
                   </td>
                   <td className="px-5 py-3.5 text-gray-400 text-xs">{fmtDate(u.createdAt)}</td>
