@@ -27,6 +27,8 @@ const pick = (key, patch = {}) => ({ ...rosterField(key), ...patch })
 export const PROGRESS_FIELDS = [
   pick('studentStatus'),
   pick('classStatus'),
+  // Class / Workout Batch (User.programs) — any of / none of / not set.
+  pick('program'),
   // The list's "Joined" column — when the student's account was created.
   pick('joined', { label: 'Enrolment date (joined)' }),
   // When their current batch started — differs from Joined for repeaters.
@@ -101,6 +103,9 @@ function shapeOk(c) {
     case 'slot':
       return !!v && typeof v === 'object' && (!v.days || DAY_TYPES.some(d => d.key === v.days))
         && (c.op === 'not_set' || SLOT_KEYS.includes(v.slot))
+    case 'program':
+      // Keys are checked by the server against its fixed list.
+      return c.op === 'not_set' || (Array.isArray(v) && v.length > 0 && v.length <= 20 && v.every(k => typeof k === 'string' && /^[a-z0-9_-]{1,30}$/.test(k)))
     case 'subjectProgress':
       return !!v && typeof v === 'object' && typeof v.subjectId === 'string' && OBJECT_ID.test(v.subjectId)
     case 'date':
@@ -124,6 +129,7 @@ function cleanValue(c) {
   if (def?.kind === 'enum' && def.dynamicOptions && Array.isArray(c.value)) return { ...c, value: c.value.filter(k => typeof k === 'string' && k.trim() && k.length <= 40).slice(0, 50) }
   if (def?.kind === 'enum' && Array.isArray(c.value)) return { ...c, value: c.value.filter(k => def.options.some(o => o.key === k)) }
   if (def?.kind === 'enum') return { ...c, value: [] }
+  if (def?.kind === 'program') return { ...c, value: (Array.isArray(c.value) ? c.value : []).filter(k => typeof k === 'string') }
   if (def?.kind === 'subject') return { ...c, value: (Array.isArray(c.value) ? c.value : []).filter(id => typeof id === 'string' && OBJECT_ID.test(id)) }
   if (def?.kind === 'date' && (!c.value || typeof c.value !== 'object')) return { ...c, value: {} }
   if (def?.kind === 'subjectProgress') {
