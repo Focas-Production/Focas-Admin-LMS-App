@@ -1572,6 +1572,13 @@ export default function UsersPage() {
           <option value="">Any program</option>
           {programFilterOptions(programs).map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
+        <select value={batch} onChange={e => { setBatch(e.target.value); setPage(1) }}
+          className={`text-xs font-semibold px-2.5 py-1.5 rounded-lg border outline-none focus:ring-2 focus:ring-indigo-400 ${
+            batch ? 'bg-indigo-50 text-indigo-700 border-indigo-400' : 'bg-white text-gray-600 border-gray-200'}`}>
+          <option value="">All batches</option>
+          {batches.map(b => <option key={b} value={b}>{b}</option>)}
+          <option value="none">Batch not set</option>
+        </select>
         {/* Class status only exists on Class students, so any pick here
             narrows the list to them. */}
         <select value={classStatus} onChange={e => { setClassStatus(e.target.value); setPage(1) }}
@@ -1587,13 +1594,6 @@ export default function UsersPage() {
           <option value="">Any student status</option>
           {STUDENT_STATUSES.map(st => <option key={st.key} value={st.key}>{st.label}</option>)}
           <option value="none">Student status not set</option>
-        </select>
-        <select value={batch} onChange={e => { setBatch(e.target.value); setPage(1) }}
-          className={`text-xs font-semibold px-2.5 py-1.5 rounded-lg border outline-none focus:ring-2 focus:ring-indigo-400 ${
-            batch ? 'bg-indigo-50 text-indigo-700 border-indigo-400' : 'bg-white text-gray-600 border-gray-200'}`}>
-          <option value="">All batches</option>
-          {batches.map(b => <option key={b} value={b}>{b}</option>)}
-          <option value="none">Batch not set</option>
         </select>
         {(program || level || batch || classStatus || studentStatus || search) && (
           <button onClick={() => { setProgram(''); setLevel(''); setBatch(''); setClassStatus(''); setStudentStatus(''); setSearch(''); setPage(1) }}

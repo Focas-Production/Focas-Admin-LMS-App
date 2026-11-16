@@ -11,6 +11,11 @@
 //   program → array of program keys ('class', 'workout' — lib/programs.js)
 //   slot    → { slot, days }        days '' = on any day | 'weekdays' | 'weekends'
 //   chapter → { subjectId, chapterId, unitId }   (the operator names the status)
+//   subjectProgress → { subjectId, percent, min, max }  one paper's % topics done
+//            (the report's number); the per-student % arrives via
+//            ctx.subjectProgress[subjectId] = Map(userId → { done, total, percent })
+//            from /api/admin/subject-progress, and like a chapter row it
+//            doesn't filter until that has landed
 //
 // Program options come from the server's fixed list, via ctx.programs.
 //
@@ -158,8 +163,13 @@ export const FIELD_DEFS = [
   { key: 'group',      label: 'Group',           kind: 'enum',
     options: [{ key: 'group1', label: 'Group 1' }, { key: 'group2', label: 'Group 2' }, { key: 'both', label: 'Both groups' }],
     get: s => s.caGroup },
-  { key: 'attempt',    label: 'Attempt',         kind: 'enum',
-    options: ATTEMPT_OPTIONS, get: s => s.caAttempt },
+  // The exam sitting ('Jan 2027'). Same name and choices as the Progress
+  // list's Batch: the page fills in every sitting students actually have
+  // (withSittingOptions), past ones marked; the upcoming list is only the
+  // fallback before students load. Key stays 'attempt' for saved views.
+  { key: 'attempt',    label: 'Batch (exam sitting)', kind: 'enum', dynamicOptions: true,
+    options: ATTEMPT_OPTIONS,
+    get: s => (typeof s.caAttempt === 'string' ? s.caAttempt.trim() : s.caAttempt) },
   // What they came for. 'is' = holds any of the picked programs, "isn't" =
   // holds none of them; a student may have several.
   { key: 'program',    label: 'Program',         kind: 'program',
@@ -212,17 +222,29 @@ export const FIELD_DEFS = [
       { key: 'allotted_plus', label: 'has a class (allotted, attended or completed)' },
       { key: 'attended_plus', label: 'has attended (attended or completed)' },
     ] },
+  // One paper's "topics done" % — the same number as the student's report
+  // (server/utils/subjectProgressBatch.js). Shared with the Progress list.
+  { key: 'subjectProgress', label: 'Subject progress (% topics done)', kind: 'subjectProgress',
+    ops: [
+      { key: 'below',       label: 'is below' },
+      { key: 'at_least',    label: 'is at least' },
+      { key: 'between',     label: 'is between' },
+      { key: 'not_started', label: 'is 0% (nothing done)' },
+      { key: 'completed',   label: 'is 100% (all done)' },
+    ] },
   { key: 'source',     label: 'Source',          kind: 'enum',
     options: [{ key: 'shopify', label: 'Shopify' }, { key: 'website', label: 'Website' }, { key: 'combo', label: 'Combo' }, { key: 'custom', label: 'Added by admin' }],
     get: s => s.source },
 ]
 
-export const fieldDef = (key) => FIELD_DEFS.find(f => f.key === key) || null
+// `defs` lets another page (the Progress list — lib/progressFilter.js) offer
+// its own field list through the same row editor.
+export const fieldDef = (key, defs = FIELD_DEFS) => defs.find(f => f.key === key) || null
 export const opsFor = (def) => def.ops || (def.kind === 'text' ? TEXT_OPS : def.kind === 'enum' ? ENUM_OPS : [])
 
 let nextId = 1
-export function newCondition(fieldKey = 'name') {
-  const def = fieldDef(fieldKey)
+export function newCondition(fieldKey = 'name', defs = FIELD_DEFS) {
+  const def = fieldDef(fieldKey, defs)
   const ops = opsFor(def)
   return {
     id: `c${Date.now()}_${nextId++}`,
@@ -232,6 +254,7 @@ export function newCondition(fieldKey = 'name') {
       : def.kind === 'enrolled' ? { keys: [], subjectIds: [] }
       : def.kind === 'slot' ? { slot: '', days: '' }
       : def.kind === 'chapter' ? { subjectId: '', chapterId: '', unitId: '' }
+      : def.kind === 'subjectProgress' ? { subjectId: '', percent: '', min: '', max: '' }
       : def.kind === 'date' ? {}
       : '',
   }
@@ -242,8 +265,8 @@ export function newCondition(fieldKey = 'name') {
 const SUBJECT_OP_ALIAS = { studies: 'any', not_studies: 'none' }
 export const subjectIdsOf = (c) =>
   Array.isArray(c.value) ? c.value : c.value ? [String(c.value)] : []
-export function normalizeCondition(c) {
-  const kind = fieldDef(c.field)?.kind
+export function normalizeCondition(c, defs = FIELD_DEFS) {
+  const kind = fieldDef(c.field, defs)?.kind
   if (kind === 'subject') return { ...c, op: SUBJECT_OP_ALIAS[c.op] || c.op, value: subjectIdsOf(c) }
   // Slot rows saved while availability was per paper carried a subjectId;
   // nothing is per paper any more, so they become "that slot, on any day".
@@ -261,10 +284,29 @@ export function normalizeCondition(c) {
 export const chapterConditionKey = (c) =>
   `${c.value?.subjectId || ''}|${c.value?.chapterId || ''}|${c.value?.unitId || ''}`
 
+// A whole percent 0–100 as typed, else NaN.
+export const percentValue = (v) => {
+  const s = String(v ?? '').trim()
+  return /^\d+$/.test(s) && Number(s) <= 100 ? Number(s) : NaN
+}
+// What's wrong with a Subject progress row's numbers as typed — null if
+// nothing (blank boxes are "not filled in yet", not a problem).
+export function subjectProgressProblem(c) {
+  const v = c?.value || {}
+  const bad = (x) => String(x ?? '').trim() !== '' && Number.isNaN(percentValue(x))
+  if (c?.op === 'between') {
+    if (bad(v.min) || bad(v.max)) return 'Enter whole percents from 0 to 100'
+    if (!Number.isNaN(percentValue(v.min)) && !Number.isNaN(percentValue(v.max)) && percentValue(v.min) > percentValue(v.max)) return 'The first percent is above the second'
+  } else if (['below', 'at_least'].includes(c?.op) && bad(v.percent)) {
+    return 'Enter a whole percent from 0 to 100'
+  }
+  return null
+}
+
 // Has the admin filled the row in enough for it to act? Half-built rows are
 // ignored rather than silently matching nobody.
-export function conditionComplete(c) {
-  const def = fieldDef(c.field)
+export function conditionComplete(c, defs = FIELD_DEFS) {
+  const def = fieldDef(c.field, defs)
   if (!def) return false
   switch (def.kind) {
     case 'text':
@@ -286,6 +328,14 @@ export function conditionComplete(c) {
       return c.op === 'not_set' ? true : !!c.value?.slot
     case 'chapter':
       return !!c.value?.subjectId && !!c.value?.chapterId
+    // Progress list only (lib/progressFilter.js) — one paper's % topics done.
+    case 'subjectProgress': {
+      if (!c.value?.subjectId) return false
+      if (['not_started', 'completed'].includes(c.op)) return true
+      const filled = (v) => String(v ?? '').trim() !== ''
+      const ready = c.op === 'between' ? filled(c.value.min) && filled(c.value.max) : filled(c.value.percent)
+      return ready && !subjectProgressProblem(c)
+    }
     default:
       return false
   }
@@ -306,7 +356,9 @@ export function chapterStatusOf(student, buckets) {
 
 // Chapter rows also need their buckets fetched before they may filter.
 export function conditionReady(c, ctx) {
-  if (fieldDef(c.field)?.kind !== 'chapter') return true
+  const kind = fieldDef(c.field)?.kind
+  if (kind === 'subjectProgress') return ctx.subjectProgress?.[String(c.value?.subjectId || '').toLowerCase()] instanceof Map
+  if (kind !== 'chapter') return true
   return isChapterBuckets(ctx.chapterSets?.[chapterConditionKey(c)])
 }
 
@@ -396,6 +448,20 @@ export function evalCondition(student, c, ctx) {
       const match = types.some(t => availableSlots(student, t).includes(c.value.slot))
       return c.op === 'is' ? match : !match
     }
+    case 'subjectProgress': {
+      const map = ctx.subjectProgress?.[String(c.value.subjectId).toLowerCase()]
+      if (!(map instanceof Map)) return true   // still loading / errored — don't hide anyone
+      const p = map.get(String(student._id))
+      if (!p) return false                     // paper not on this student's report
+      switch (c.op) {
+        case 'below':       return p.percent < percentValue(c.value.percent)
+        case 'at_least':    return p.percent >= percentValue(c.value.percent)
+        case 'between':     return p.percent >= percentValue(c.value.min) && p.percent <= percentValue(c.value.max)
+        case 'not_started': return p.done === 0
+        case 'completed':   return p.total > 0 && p.done === p.total
+        default:            return true
+      }
+    }
     case 'chapter': {
       const buckets = ctx.chapterSets?.[chapterConditionKey(c)]
       if (!isChapterBuckets(buckets)) return true   // still loading / errored — don't hide anyone
@@ -413,4 +479,81 @@ export function evalCondition(student, c, ctx) {
     }
     default: return true
   }
+}
+
+// ─────────────────────────── exam sittings (Batch) ───────────────────────────
+
+// Has this sitting's exam month already ended? 'Sep 2026' → true from Oct 2026.
+export function sittingOver(label, now = new Date()) {
+  const t = Date.parse(`1 ${label}`)
+  if (!Number.isFinite(t)) return false
+  const d = new Date(t)
+  return new Date(d.getFullYear(), d.getMonth() + 1, 1) <= now
+}
+
+// `fields` with the Batch field `key` offering every sitting in `sittings`
+// plus any a row already holds (a saved view's sitting nobody has any more
+// stays visible and removable), in calendar order, past ones marked
+// "exam over". Used by the scheduler ('attempt') and Progress list ('batch').
+export function withSittingOptions(fields, key, sittings, conditions = []) {
+  const held = conditions.filter(c => c.field === key && Array.isArray(c.value)).flatMap(c => c.value)
+  const list = [...new Set([...(sittings || []), ...held].filter(b => typeof b === 'string' && b.trim()).map(b => b.trim()))]
+  const time = (b) => { const t = Date.parse(`1 ${b}`); return Number.isFinite(t) ? t : Infinity }
+  list.sort((a, b) => time(a) - time(b) || a.localeCompare(b))
+  const options = list.map(b => ({ key: b, label: sittingOver(b) ? `${b} · exam over` : b }))
+  return fields.map(f => (f.key === key ? { ...f, options } : f))
+}
+
+// ─────────────────────────── AND / OR between rows ───────────────────────────
+// Every row after the first carries join: 'and' | 'or' — how it joins the row
+// above (rows without one, e.g. views saved before joins existed, read as
+// AND). AND binds tighter than OR: "1 AND 2 OR 3" = (1 AND 2) OR 3, so the
+// rows fall into AND-groups split at every OR, and a student passes when any
+// group holds whole. Used by the scheduler roster and the Progress list (whose
+// server, utils/progressFilter.js, applies the same rule).
+
+export const JOINS = { and: 'AND', or: 'OR' }
+
+// Rows → AND-groups, split at every OR. Each entry keeps the row's index so
+// the panel can number rows "1, 2, 3" the same way inside and across groups.
+export function groupConditions(conditions) {
+  const groups = []
+  conditions.forEach((c, i) => {
+    if (!groups.length || c.join === 'or') groups.push([])
+    groups[groups.length - 1].push({ c, i })
+  })
+  return groups
+}
+
+// "(1 AND 2) OR 3" — the plain reading of the rows, for the panel and button.
+// `only` = the rows that count (filled in); others are left out.
+export function describeFilter(conditions, only = () => true) {
+  const groups = groupConditions(conditions)
+    .map(g => g.filter(x => only(x.c)).map(x => String(x.i + 1)))
+    .filter(g => g.length)
+  if (!groups.length) return ''
+  return groups.map(g => (g.length > 1 && groups.length > 1 ? `(${g.join(' AND ')})` : g.join(' AND '))).join(' OR ')
+}
+
+// Removing a row that starts a box must not merge the next row into the box
+// above — the next row inherits the OR.
+export function removeConditionAt(conditions, id) {
+  const i = conditions.findIndex(c => c.id === id)
+  if (i < 0) return conditions
+  const next = conditions.slice()
+  if (next[i].join === 'or' && next[i + 1]?.join === 'and') next[i + 1] = { ...next[i + 1], join: 'or' }
+  next.splice(i, 1)
+  return next
+}
+
+// Does this student pass the whole filter? Half-built rows, and rows the
+// caller says to ignore (their data failed to load), drop out of their group
+// first — so under OR they can't make everyone match — and a group left empty
+// drops out whole. No rows left = no filter.
+export function matchesConditions(student, conditions, ctx, isIgnored = () => false) {
+  const groups = groupConditions(conditions)
+    .map(g => g.map(x => x.c).filter(c => conditionComplete(c) && !isIgnored(c)))
+    .filter(g => g.length)
+  if (!groups.length) return true
+  return groups.some(g => g.every(c => evalCondition(student, c, ctx)))
 }

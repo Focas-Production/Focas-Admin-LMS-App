@@ -1,11 +1,12 @@
 import { useState, useEffect, useMemo } from 'react'
 import { apiFetch, saveWithClashCheck } from '../api'
 import {
-  FIELD_DEFS, fieldDef, opsFor, newCondition, conditionComplete, conditionReady,
-  evalCondition, chapterConditionKey, studiesSubject,
-  normalizeCondition, subjectIdsOf, SLOT_OPTIONS, DAY_TYPES,
+  FIELD_DEFS, conditionComplete, conditionReady, withSittingOptions,
+  matchesConditions, describeFilter, chapterConditionKey, studiesSubject,
+  normalizeCondition,
   availabilityLabel, hasSlotAvailability, isAvailableFor,
 } from '../lib/rosterFilter'
+import ConditionList from './ConditionList'
 import SlotEditorModal from './SlotEditorModal'
 import { usePrograms, programNames, programFilterOptions, matchesProgram } from '../lib/programs'
 
@@ -171,6 +172,7 @@ export default function SchedulerBoard({ rooms, hallRooms, hosts, classes, onCha
   const [advOpen, setAdvOpen]           = useState(false)  // the drawer
   const [advConditions, setAdvConditions] = useState([])   // condition rows, ANDed (lib/rosterFilter)
   const [chapterSets, setChapterSets]   = useState({})     // condition key → { done, attended, allotted: Set(userIds) } | 'error'
+  const [subjectProgress, setSubjectProgress] = useState({}) // subjectId → Map(userId → { done, total, percent }) | 'error'
   const [views, setViews]               = useState(null)   // saved filter views (server, shared)
   const [activeViewId, setActiveViewId] = useState('')
   const [slotEditor, setSlotEditor]     = useState(null)   // student whose slot times are being edited
@@ -346,16 +348,49 @@ export default function SchedulerBoard({ rooms, hallRooms, hosts, classes, onCha
     return () => { stale = true }
   }, [advConditions, chapterSets])
 
+  // Advanced "Subject progress" rows need each student's % on that paper —
+  // the report's number, worked out on the server (/api/admin/subject-progress).
+  // Fetched once per paper, as soon as the paper is picked, and kept for the
+  // board's lifetime (reload the page for fresh numbers); 'error' = the row
+  // passes everyone rather than silently hiding students.
+  useEffect(() => {
+    const need = [...new Set(
+      advConditions
+        .filter(c => c.field === 'subjectProgress' && c.value?.subjectId)
+        .map(c => String(c.value.subjectId).toLowerCase()),
+    )].filter(k => !(k in subjectProgress))
+    if (!need.length) return
+    let stale = false
+    for (const sid of need) {
+      apiFetch(`/api/admin/subject-progress?subjectId=${sid}`)
+        .then(d => { if (!stale) setSubjectProgress(prev => ({ ...prev, [sid]: new Map(Object.entries(d.students || {})) })) })
+        .catch(() => { if (!stale) setSubjectProgress(prev => ({ ...prev, [sid]: 'error' })) })
+    }
+    return () => { stale = true }
+  }, [advConditions, subjectProgress])
+
+  // Every exam sitting a roster student has — the Advanced Batch choices.
+  const sittings = useMemo(
+    () => [...new Set((students || []).map(s => (typeof s.caAttempt === 'string' ? s.caAttempt.trim() : '')).filter(Boolean))],
+    [students],
+  )
+
   const subjectsById = useMemo(
     () => new Map((subjects || []).map(s => [String(s._id), s])),
     [subjects],
   )
-  const filterCtx = { subjectsById, chapterSets, programs }
-  const activeConditions = advConditions.filter(conditionComplete)
-  const advChecking = activeConditions.some(c =>
-    !conditionReady(c, filterCtx) && chapterSets[chapterConditionKey(c)] !== 'error')
-  const advCheckFailed = activeConditions.some(c =>
-    c.field === 'chapter' && chapterSets[chapterConditionKey(c)] === 'error')
+  const filterCtx = { subjectsById, chapterSets, programs, subjectProgress }
+  const activeConditions = advConditions.filter(c => conditionComplete(c))
+  const failedFetch = (c) => c.field === 'chapter' ? chapterSets[chapterConditionKey(c)] === 'error'
+    : c.field === 'subjectProgress' ? subjectProgress[String(c.value?.subjectId || '').toLowerCase()] === 'error'
+    : false
+  const advChecking = activeConditions.some(c => !conditionReady(c, filterCtx) && !failedFetch(c))
+  const advCheckFailed = activeConditions.some(failedFetch)
+  // Papers whose % the roster cards show (one badge per active row's paper).
+  const progressBadges = [...new Set(activeConditions
+    .filter(c => c.field === 'subjectProgress' && conditionReady(c, filterCtx))
+    .map(c => String(c.value.subjectId).toLowerCase()))]
+    .map(sid => ({ sid, short: (subjectsById.get(sid)?.name || 'Subject').split(/\s+/).map(w => w[0]).join('').slice(0, 4).toUpperCase(), name: subjectsById.get(sid)?.name || 'Subject' }))
 
   // Enrollment + paper + advanced conditions narrow the pool; search and the
   // status chips slice it. Chip counts come from the pool so typing a search
@@ -366,7 +401,8 @@ export default function SchedulerBoard({ rooms, hallRooms, hosts, classes, onCha
     if (['group1', 'group2', 'both'].includes(enrolFilter) && s.caGroup !== enrolFilter) return false
     if (!matchesProgram(s, progFilter)) return false
     if (pickedSubject && !studiesSubject(s, pickedSubject)) return false
-    if (!advConditions.every(c => evalCondition(s, c, filterCtx))) return false
+    // AND / OR between rows; rows whose data failed to load are ignored.
+    if (!matchesConditions(s, advConditions, filterCtx, failedFetch)) return false
     return true
   })
   // One student's rung on the picked item, from the exclusive buckets the
@@ -410,7 +446,7 @@ export default function SchedulerBoard({ rooms, hallRooms, hosts, classes, onCha
     setChapFilter(q.chapFilter || '')
     setUnitFilter(q.unitFilter || '')
     setStatusFilter(q.statusFilter || 'all')
-    setAdvConditions(Array.isArray(v.filters?.conditions) ? v.filters.conditions.map(normalizeCondition) : [])
+    setAdvConditions(Array.isArray(v.filters?.conditions) ? v.filters.conditions.map(c => normalizeCondition(c)) : [])
     setActiveViewId(String(v._id))
   }
   const clearAllFilters = () => {
@@ -988,7 +1024,8 @@ export default function SchedulerBoard({ rooms, hallRooms, hosts, classes, onCha
                 title="Stack conditions on any field — joining date, last login, slot availability, chapter completion…"
                 className={`text-[10px] font-bold px-2 py-1 rounded-md transition-colors ${
                   activeConditions.length ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>
-                ⚙ Advanced{activeConditions.length ? ` · ${activeConditions.length}` : ''}
+                ⚙ Advanced{activeConditions.length
+                  ? ` · ${activeConditions.length > 1 ? describeFilter(advConditions, c => conditionComplete(c)) : 1}` : ''}
               </button>
               {activeViewId && (views || []).some(v => String(v._id) === activeViewId) && (
                 <span className="text-[10px] font-semibold text-indigo-500 truncate">
@@ -996,7 +1033,7 @@ export default function SchedulerBoard({ rooms, hallRooms, hosts, classes, onCha
                 </span>
               )}
             </div>
-            {advChecking && <p className="text-[10px] text-gray-400 mt-1">Checking chapter completion…</p>}
+            {advChecking && <p className="text-[10px] text-gray-400 mt-1">Checking chapter / subject progress…</p>}
             {advCheckFailed && (
               <p className="text-[10px] text-red-500 mt-1">Some completion checks failed — those conditions are ignored.</p>
             )}
@@ -1032,6 +1069,19 @@ export default function SchedulerBoard({ rooms, hallRooms, hosts, classes, onCha
                   {/* Which slots they can attend, by day type ("All days 1,4",
                       "Wkdy 1,4 · Wknd 2"), and the editor to change it —
                       admins re-set these any time. */}
+                  {/* % topics done on each paper an Advanced "Subject
+                      progress" row names — the number to schedule by. */}
+                  {progressBadges.map(b => {
+                    const p = subjectProgress[b.sid] instanceof Map ? subjectProgress[b.sid].get(String(s._id)) : null
+                    if (!p) return null
+                    const tone = p.percent >= 75 ? 'text-emerald-700 bg-emerald-50' : p.percent >= 50 ? 'text-amber-700 bg-amber-50' : 'text-rose-700 bg-rose-50'
+                    return (
+                      <span key={b.sid} className={`text-[9px] font-bold px-1.5 py-0.5 rounded flex-shrink-0 ${tone}`}
+                        title={`${b.name}: ${p.done} of ${p.total} topics done (${p.percent}%)`}>
+                        {b.short} {p.percent}%
+                      </span>
+                    )
+                  })}
                   {availabilityLabel(s) && (
                     <span className="text-[9px] font-bold text-sky-600 bg-sky-50 px-1.5 py-0.5 rounded flex-shrink-0 max-w-[110px] truncate"
                       title={`Slot availability: ${availabilityLabel(s)}`}>
@@ -1863,7 +1913,7 @@ export default function SchedulerBoard({ rooms, hallRooms, hosts, classes, onCha
       {advOpen && (
         <AdvancedFilterPanel
           conditions={advConditions} setConditions={setAdvConditions}
-          subjects={subjects} programs={programs}
+          subjects={subjects} programs={programs} sittings={sittings}
           views={views} setViews={setViews}
           activeViewId={activeViewId} setActiveViewId={setActiveViewId}
           currentFilters={currentFilters} onApplyView={applyView}
@@ -1896,7 +1946,7 @@ export default function SchedulerBoard({ rooms, hallRooms, hosts, classes, onCha
 // live on the server and are shared by every admin.
 
 function AdvancedFilterPanel({
-  conditions, setConditions, subjects, programs, views, setViews,
+  conditions, setConditions, subjects, programs, sittings, views, setViews,
   activeViewId, setActiveViewId, currentFilters, onApplyView, onClearAll,
   matchCount, onClose,
 }) {
@@ -1905,10 +1955,9 @@ function AdvancedFilterPanel({
   const [error, setError]       = useState('')
 
   const activeView = (views || []).find(v => String(v._id) === activeViewId) || null
+  // Batch (exam sitting) choices: every sitting the roster's students have.
+  const fields = withSittingOptions(FIELD_DEFS, 'attempt', sittings, conditions)
 
-  const patchCondition = (id, patch) =>
-    setConditions(conditions.map(c => (c.id === id ? { ...c, ...patch } : c)))
-  const removeCondition = (id) => setConditions(conditions.filter(c => c.id !== id))
 
   const saveAsNew = async () => {
     const name = viewName.trim()
@@ -1967,7 +2016,7 @@ function AdvancedFilterPanel({
         <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100">
           <div>
             <h2 className="text-sm font-bold text-gray-900">Filter students</h2>
-            <p className="text-[11px] text-gray-400">{matchCount} {matchCount === 1 ? 'match' : 'matches'} · conditions apply live, all must hold</p>
+            <p className="text-[11px] text-gray-400">{matchCount} {matchCount === 1 ? 'match' : 'matches'} · conditions apply live</p>
           </div>
           <button onClick={onClose} className="text-gray-300 hover:text-gray-500 text-lg leading-none">✕</button>
         </div>
@@ -2015,24 +2064,13 @@ function AdvancedFilterPanel({
             {error && <p className="text-[11px] text-red-500 mt-1">{error}</p>}
           </div>
 
-          {/* Condition rows */}
-          <div>
-            <p className="text-[10px] font-bold text-gray-400 uppercase mb-1.5">Conditions</p>
-            {!conditions.length && (
-              <p className="text-xs text-gray-400 mb-2">No conditions yet — add one below. The quick filters above the roster still apply.</p>
-            )}
-            <div className="space-y-2">
-              {conditions.map(c => (
-                <ConditionRow key={c.id} cond={c} subjects={subjects} programs={programs}
-                  onChange={patch => patchCondition(c.id, patch)}
-                  onRemove={() => removeCondition(c.id)} />
-              ))}
-            </div>
-            <button onClick={() => setConditions([...conditions, newCondition('name')])}
-              className="mt-2 text-xs font-semibold text-indigo-600 hover:text-indigo-800">
-              + Add condition
-            </button>
-          </div>
+          {/* Condition rows — AND / OR at every gap (components/ConditionList) */}
+          <ConditionList conditions={conditions} setConditions={setConditions} fields={fields}
+            subjects={subjects} programs={programs}
+            isComplete={c => conditionComplete(c)} showProblems newFieldKey="name" />
+          {!conditions.length && (
+            <p className="text-[10px] text-gray-400">The quick filters above the roster still apply.</p>
+          )}
         </div>
 
         <div className="flex items-center justify-between px-4 py-3 border-t border-gray-100">
@@ -2047,228 +2085,6 @@ function AdvancedFilterPanel({
         </div>
       </div>
     </>
-  )
-}
-
-// One condition row: field → operator → value editor, the editor's shape driven
-// by the field's kind (see lib/rosterFilter.js). Changing the field resets the
-// row so a stale value can never leak across kinds.
-function ConditionRow({ cond, subjects, programs, onChange, onRemove }) {
-  const def = fieldDef(cond.field)
-  if (!def) return null
-  const ops = opsFor(def)
-  const inputCls = 'px-2 py-1.5 text-xs border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-400 bg-white text-gray-700'
-
-  const chapterSubject = def.kind === 'chapter'
-    ? (subjects || []).find(s => String(s._id) === String(cond.value?.subjectId)) || null
-    : null
-  const chapterChapter = chapterSubject
-    ? (chapterSubject.chapters || []).find(c => String(c._id) === String(cond.value?.chapterId)) || null
-    : null
-
-  return (
-    <div className="border border-gray-100 rounded-xl p-2 bg-gray-50/50">
-      <div className="flex items-center gap-1.5">
-        <select value={cond.field}
-          onChange={e => onChange({ ...newCondition(e.target.value), id: cond.id })}
-          className={`${inputCls} flex-1 min-w-0`}>
-          {FIELD_DEFS.map(f => <option key={f.key} value={f.key}>{f.label}</option>)}
-        </select>
-        <select value={cond.op}
-          onChange={e => onChange({ op: e.target.value })}
-          className={`${inputCls} flex-1 min-w-0`}>
-          {ops.map(o => <option key={o.key} value={o.key}>{o.label}</option>)}
-        </select>
-        <button onClick={onRemove} className="text-gray-300 hover:text-red-500 flex-shrink-0 px-1">✕</button>
-      </div>
-
-      {/* value editor */}
-      <div className="mt-1.5">
-        {def.kind === 'text' && !['empty', 'not_empty'].includes(cond.op) && (
-          <input value={cond.value || ''} onChange={e => onChange({ value: e.target.value })}
-            placeholder={`${def.label}…`} className={`${inputCls} w-full`} />
-        )}
-
-        {def.kind === 'date' && cond.op === 'last' && (
-          <div className="flex items-center gap-1.5">
-            <input type="number" min="1" value={cond.value?.days || ''}
-              onChange={e => onChange({ value: { days: e.target.value } })}
-              className={`${inputCls} w-20`} />
-            <span className="text-xs text-gray-500">days</span>
-          </div>
-        )}
-        {def.kind === 'date' && ['before', 'after'].includes(cond.op) && (
-          <input type="date" value={cond.value?.date || ''}
-            onChange={e => onChange({ value: { date: e.target.value } })}
-            className={`${inputCls} w-full`} />
-        )}
-        {def.kind === 'date' && cond.op === 'between' && (
-          <div className="flex items-center gap-1.5">
-            <input type="date" value={cond.value?.from || ''}
-              onChange={e => onChange({ value: { ...cond.value, from: e.target.value } })}
-              className={`${inputCls} flex-1 min-w-0`} />
-            <span className="text-xs text-gray-400">–</span>
-            <input type="date" value={cond.value?.to || ''}
-              onChange={e => onChange({ value: { ...cond.value, to: e.target.value } })}
-              className={`${inputCls} flex-1 min-w-0`} />
-          </div>
-        )}
-
-        {def.kind === 'enum' && cond.op !== 'not_set' && (
-          <div className="flex flex-wrap gap-1">
-            {def.options.map(o => {
-              const on = (cond.value || []).includes(o.key)
-              return (
-                <button key={o.key}
-                  onClick={() => onChange({ value: on ? cond.value.filter(v => v !== o.key) : [...(cond.value || []), o.key] })}
-                  className={`text-[10px] font-bold px-2 py-1 rounded-md ${
-                    on ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>
-                  {o.label}
-                </button>
-              )
-            })}
-          </div>
-        )}
-
-        {def.kind === 'program' && cond.op !== 'not_set' && (
-          <div className="flex flex-wrap gap-1">
-            {programs === null ? (
-              <span className="text-[10px] text-gray-400">Loading programs…</span>
-            ) : !(programs || []).length ? (
-              <span className="text-[10px] text-gray-400">Programs could not be loaded.</span>
-            ) : programs.map(p => {
-              const id = p.key
-              const on = (cond.value || []).includes(id)
-              return (
-                <button key={id}
-                  onClick={() => onChange({ value: on ? cond.value.filter(v => v !== id) : [...(cond.value || []), id] })}
-                  className={`text-[10px] font-bold px-2 py-1 rounded-md ${
-                    on ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>
-                  {p.name}{p.active ? '' : ' (retired)'}
-                </button>
-              )
-            })}
-          </div>
-        )}
-
-        {def.kind === 'enrolled' && (() => {
-          const { keys = [], subjectIds = [] } = cond.value || {}
-          const bySubjects = keys.includes('subjects')
-          return (
-            <div className="space-y-1.5">
-              <div className="flex flex-wrap gap-1">
-                {def.options.map(o => {
-                  const on = keys.includes(o.key)
-                  return (
-                    <button key={o.key}
-                      // Unticking "Specific subjects" drops its papers too, so a
-                      // hidden pick can't come back when it's ticked again.
-                      onClick={() => onChange({ value: {
-                        keys: on ? keys.filter(v => v !== o.key) : [...keys, o.key],
-                        subjectIds: o.key === 'subjects' && on ? [] : subjectIds,
-                      } })}
-                      className={`text-[10px] font-bold px-2 py-1 rounded-md ${
-                        on ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>
-                      {o.label}
-                    </button>
-                  )
-                })}
-              </div>
-              {bySubjects && (
-                <>
-                  <p className="text-[10px] text-gray-400">
-                    {subjectIds.length
-                      ? `Enrolled for any of these ${subjectIds.length} paper${subjectIds.length !== 1 ? 's' : ''}`
-                      : 'Tick papers to narrow it — none ticked = any specific subjects'}
-                  </p>
-                  <SubjectChecklist subjects={subjects} picked={subjectIds}
-                    onChange={ids => onChange({ value: { keys, subjectIds: ids } })} />
-                </>
-              )}
-            </div>
-          )
-        })()}
-
-        {def.kind === 'subject' && (
-          <SubjectChecklist subjects={subjects} picked={subjectIdsOf(cond)}
-            onChange={ids => onChange({ value: ids })} />
-        )}
-
-        {def.kind === 'slot' && (
-          <div className="space-y-1.5">
-            {cond.op !== 'not_set' && (
-              <select value={cond.value?.slot || ''}
-                onChange={e => onChange({ value: { ...cond.value, slot: e.target.value } })}
-                className={`${inputCls} w-full`}>
-                <option value="">Pick a slot…</option>
-                {SLOT_OPTIONS.map(o => <option key={o.key} value={o.key}>{o.label}</option>)}
-              </select>
-            )}
-            <select value={cond.value?.days || ''}
-              onChange={e => onChange({ value: { ...cond.value, days: e.target.value } })}
-              className={`${inputCls} w-full`}>
-              <option value="">On any day</option>
-              {DAY_TYPES.map(d => <option key={d.key} value={d.key}>On {d.long.toLowerCase()}</option>)}
-            </select>
-          </div>
-        )}
-
-        {def.kind === 'chapter' && (
-          <div className="space-y-1.5">
-            <select value={cond.value?.subjectId || ''}
-              onChange={e => onChange({ value: { subjectId: e.target.value, chapterId: '', unitId: '' } })}
-              className={`${inputCls} w-full`}>
-              <option value="">Subject…</option>
-              {(subjects || []).map(s => <option key={s._id} value={String(s._id)}>{s.name} ({s.level})</option>)}
-            </select>
-            <select value={cond.value?.chapterId || ''} disabled={!chapterSubject}
-              onChange={e => onChange({ value: { ...cond.value, chapterId: e.target.value, unitId: '' } })}
-              className={`${inputCls} w-full disabled:bg-gray-50 disabled:text-gray-400`}>
-              <option value="">{chapterSubject ? 'Chapter…' : 'Pick subject first'}</option>
-              {(chapterSubject?.chapters || []).map(c => (
-                <option key={c._id} value={String(c._id)}>{c.completed ? '✓ ' : ''}{c.name}</option>
-              ))}
-            </select>
-            {(chapterChapter?.units || []).length > 0 && (
-              <select value={cond.value?.unitId || ''}
-                onChange={e => onChange({ value: { ...cond.value, unitId: e.target.value } })}
-                className={`${inputCls} w-full`}>
-                <option value="">Whole chapter</option>
-                {chapterChapter.units.map(u => (
-                  <option key={u._id} value={String(u._id)}>{u.completed ? '✓ ' : ''}{u.name}</option>
-                ))}
-              </select>
-            )}
-          </div>
-        )}
-      </div>
-    </div>
-  )
-}
-
-// Multi-pick paper list for condition rows; `picked` and onChange's argument
-// are arrays of subject id strings.
-function SubjectChecklist({ subjects, picked, onChange }) {
-  return (
-    <div className="space-y-1 max-h-44 overflow-y-auto pr-0.5">
-      {(subjects || []).map(s => {
-        const id = String(s._id)
-        const on = picked.includes(id)
-        return (
-          <button key={id}
-            onClick={() => onChange(on ? picked.filter(v => v !== id) : [...picked, id])}
-            className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg border text-left text-xs ${
-              on ? 'border-indigo-300 bg-indigo-50 text-indigo-800 font-medium' : 'border-gray-100 text-gray-600 hover:bg-gray-50'}`}>
-            <span className={`w-3.5 h-3.5 rounded flex items-center justify-center text-[9px] font-bold flex-shrink-0 ${
-              on ? 'bg-indigo-600 text-white' : 'border border-gray-300 text-transparent'}`}>✓</span>
-            <span className="flex-1 truncate">{s.name}</span>
-            <span className="text-[9px] text-gray-400 flex-shrink-0">
-              {s.level}{s.group ? ` · ${s.group === 'group1' ? 'G1' : 'G2'}` : ''}
-            </span>
-          </button>
-        )
-      })}
-    </div>
   )
 }
 

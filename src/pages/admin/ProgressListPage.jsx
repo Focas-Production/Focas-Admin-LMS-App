@@ -4,11 +4,31 @@
 //
 // Backed by /api/admin/progress-overview, which uses the report's own rules so
 // a row and its report never disagree.
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { apiFetch } from '../../api'
+import { apiFetch, authHeaders } from '../../api'
 import { enrollmentLabel, CA_LEVELS } from '../../lib/ca'
 import { usePrograms, programNames, programFilterOptions } from '../../lib/programs'
+import { normalizeProgressFilter, serializeProgressFilter, progressConditionComplete, progressRowProblem, describeFilter } from '../../lib/progressFilter'
+import ProgressFilterPanel, { PROGRESS_VIEW_SCOPE } from '../../components/ProgressFilterPanel'
+
+// The Advanced filter survives opening a student's report and coming back.
+const ADV_STORAGE_KEY = 'admin-progress-adv-filter'
+const EMPTY_ADV = { conditions: [] }
+function loadStoredAdv() {
+  try { return normalizeProgressFilter(JSON.parse(sessionStorage.getItem(ADV_STORAGE_KEY) || 'null')) }
+  catch { return EMPTY_ADV }
+}
+
+// Re-asking the server on every keystroke in a "last N days" box is wasteful.
+function useDebounced(value, ms) {
+  const [v, setV] = useState(value)
+  useEffect(() => {
+    const t = setTimeout(() => setV(value), ms)
+    return () => clearTimeout(t)
+  }, [value, ms])
+  return v
+}
 
 function fmtDay(d) {
   if (!d) return '—'
@@ -73,32 +93,130 @@ export default function ProgressListPage() {
   const [level, setLevel]     = useState('')
   const [batch, setBatch]     = useState('')
   const [batches, setBatches] = useState([])
+  const [allBatches, setAllBatches] = useState([])   // every sitting — Advanced filter's Batch choices
   const [program, setProgram] = useState('')   // program key | 'none' | '' (any)
   const programs = usePrograms()
   const [sort, setSort]       = useState({ key: 'joined', dir: 'desc' })
   const [loading, setLoading] = useState(true)
   const [error, setError]     = useState('')
 
+  // ── Advanced filter (AND / OR condition rows, checked on the server) ──
+  const [adv, setAdvRaw]      = useState(loadStoredAdv)
+  const [advOpen, setAdvOpen] = useState(false)
+  const [subjects, setSubjects] = useState(null)
+  const [views, setViews]     = useState(null)
+  const [activeViewId, setActiveViewId] = useState('')
+  const advParam = useDebounced(useMemo(() => serializeProgressFilter(adv), [adv]), 350)
+  // One request when typing pauses, not one per letter.
+  const searchParam = useDebounced(search.trim(), 300)
+  // The first load asks the server to rebuild its cached rows, so opening the
+  // page always shows live numbers; clicks after that reuse the copy (≤30 s).
+  const freshRef = useRef(true)
+  const advCount = adv.conditions.filter(progressConditionComplete).length
+  // Filled-in rows that can't apply as typed (e.g. 11111 days) — flagged on
+  // the button so nobody reads the list as if they were applied.
+  const advNotApplied = adv.conditions.filter(c => progressRowProblem(c)).length
+  // Every change restarts at page 1. A loaded saved view stays highlighted
+  // while it's edited, so "Update" can overwrite it.
+  const setAdv = (next) => { setAdvRaw(next); setPage(1) }
+
   useEffect(() => {
+    try { sessionStorage.setItem(ADV_STORAGE_KEY, JSON.stringify(adv)) } catch { /* storage full / blocked */ }
+  }, [adv])
+
+  useEffect(() => {
+    apiFetch('/api/admin/subjects')
+      .then(d => setSubjects((d.subjects || []).filter(s => s.isActive)))
+      .catch(() => setSubjects([]))
+    apiFetch(`/api/admin/filter-views?scope=${PROGRESS_VIEW_SCOPE}`)
+      .then(d => setViews(d.views || []))
+      .catch(() => setViews([]))
+  }, [])
+
+  useEffect(() => {
+    // A slow answer to an older filter must never overwrite a newer one.
+    let alive = true
     setLoading(true)
     const query = new URLSearchParams({
       page, limit: pageSize, sort: sort.key, dir: sort.dir, show,
-      ...(search && { search }),
+      ...(searchParam && { search: searchParam }),
+      ...(freshRef.current && { fresh: '1' }),
       ...(level && { level }),
       ...(batch && { batch }),
       ...(program && { program }),
+      ...(advParam && { adv: advParam }),
     })
     apiFetch(`/api/admin/progress-overview?${query}`)
       .then(d => {
+        if (!alive) return
+        freshRef.current = false
         setRows(d.students || [])
+        // Sorted by a paper's % whose condition is gone → the server fell back
+        // to Joined; say so instead of showing a stale arrow.
+        const cols = Object.keys(d.students?.[0]?.subjectProgress || {})
+        if (sort.key.startsWith('subject:') && (d.students || []).length && !cols.includes(sort.key.slice(8))) {
+          setSort({ key: 'joined', dir: 'desc' })
+        }
         setCounts(d.counts || null)
         setBatches(d.batches || [])
+        setAllBatches(d.allBatches || [])
         setTotal(d.pagination?.total || 0)
         setError('')
       })
-      .catch(err => setError(err.message))
-      .finally(() => setLoading(false))
-  }, [page, pageSize, search, show, level, batch, program, sort])
+      .catch(err => { if (alive) setError(err.message) })
+      .finally(() => { if (alive) setLoading(false) })
+    return () => { alive = false }
+  }, [page, pageSize, searchParam, show, level, batch, program, sort, advParam])
+
+  // ── CSV download ── offered only while something narrows the list, and it
+  // asks for exactly what the list shows (same filters, same sort), every
+  // matching student rather than one page.
+  const anyFilter = !!(level || batch || program || searchParam || show !== 'all' || advParam)
+  const [downloading, setDownloading] = useState(false)
+  const [downloadError, setDownloadError] = useState('')
+  async function downloadCsv() {
+    setDownloading(true); setDownloadError('')
+    try {
+      const query = new URLSearchParams({
+        sort: sort.key, dir: sort.dir, show,
+        ...(searchParam && { search: searchParam }),
+        ...(level && { level }),
+        ...(batch && { batch }),
+        ...(program && { program }),
+        ...(advParam && { adv: advParam }),
+      })
+      const res = await fetch(`${import.meta.env.VITE_API_BASE}/api/admin/progress-overview/export?${query}`, { headers: authHeaders() })
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Could not make the file')
+      const blob = await res.blob()
+      // progress-intermediate-jan-2027-class-advanced-2026-11-16.csv
+      const parts = [level, batch, program, show !== 'all' && show, advParam && 'advanced', searchParam && 'search']
+        .filter(Boolean).map(x => String(x).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''))
+      const day = new Date(Date.now() + 5.5 * 3600e3).toISOString().slice(0, 10)
+      const a = document.createElement('a')
+      a.href = URL.createObjectURL(blob)
+      a.download = `progress-${[...parts, day].join('-')}.csv`
+      document.body.appendChild(a); a.click(); a.remove()
+      setTimeout(() => URL.revokeObjectURL(a.href), 60_000)
+    } catch (e) {
+      setDownloadError(e.message || 'Could not make the file')
+    } finally {
+      setDownloading(false)
+    }
+  }
+
+  // A saved view holds the page's quick filters too, so one click restores
+  // "Inter · Jan 2027 · (Follow-up AND slot 1) OR joined this week".
+  const currentView = () => ({ quick: { level, batch, program, show }, ...adv })
+  const applyView = (v) => {
+    const q = v.filters?.quick || {}
+    setLevel(q.level || ''); setBatch(q.batch || ''); setProgram(q.program || ''); setShow(q.show || 'all')
+    setAdv(normalizeProgressFilter(v.filters))
+    setActiveViewId(String(v._id))
+  }
+  const clearAllFilters = () => {
+    setLevel(''); setBatch(''); setProgram(''); setShow('all'); setSearch('')
+    setAdv(EMPTY_ADV); setActiveViewId('')
+  }
 
   // AdminLayout's <main> is the scroller — jump back to the top on a new page.
   useEffect(() => { document.querySelector('main')?.scrollTo({ top: 0 }) }, [page, pageSize])
@@ -106,11 +224,24 @@ export default function ProgressListPage() {
   function sortBy(key) {
     if (!key) return
     // Names read best A→Z; numbers and dates are most useful highest first.
-    setSort(s => s.key === key ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: key === 'name' ? 'asc' : 'desc' })
+    // A paper's % starts lowest first — the students to reschedule.
+    setSort(s => s.key === key ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' }
+      : { key, dir: key === 'name' || key.startsWith('subject:') ? 'asc' : 'desc' })
     setPage(1)
   }
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
+
+  // One "% topics done" column per paper a Subject progress condition names,
+  // right after "Enrolled for". Taken from the answer itself, so the columns
+  // always match the rows on screen.
+  const subjectName = (id) => {
+    const sub = (subjects || []).find(x => String(x._id).toLowerCase() === id)
+    return sub ? sub.name : subjects ? 'Inactive subject' : 'Subject'
+  }
+  const progressCols = Object.keys(rows[0]?.subjectProgress || {})
+    .map(id => ({ key: `subject:${id}`, label: `${subjectName(id)} %`, subjectId: id }))
+  const columns = [...COLUMNS.slice(0, 2), ...progressCols, ...COLUMNS.slice(2)]
 
   return (
     <div className="p-6">
@@ -140,6 +271,28 @@ export default function ProgressListPage() {
             <option value="">All programs</option>
             {programFilterOptions(programs).map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
           </select>
+          <button onClick={() => setAdvOpen(true)}
+            title={advNotApplied ? `${advNotApplied} condition${advNotApplied > 1 ? 's are' : ' is'} not applied — open to fix` : undefined}
+            className={`py-2 px-3 rounded-xl text-sm font-semibold border transition-colors ${
+              advNotApplied ? 'bg-amber-50 text-amber-800 border-amber-400'
+                : advCount ? 'bg-indigo-50 text-indigo-700 border-indigo-400' : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'}`}>
+            ⚙ Advanced{advCount ? ` · ${advCount > 1 ? describeFilter(adv.conditions, progressConditionComplete) : 1}` : ''}
+            {advNotApplied > 0 && ` · ⚠ ${advNotApplied} not applied`}
+          </button>
+          {(advCount > 0 || advNotApplied > 0) && (
+            <button onClick={() => { setAdv(EMPTY_ADV); setActiveViewId('') }}
+              title="Remove every advanced condition"
+              className="text-xs font-semibold text-gray-400 hover:text-red-500">
+              Clear
+            </button>
+          )}
+          {anyFilter && (
+            <button onClick={downloadCsv} disabled={downloading || loading || total === 0}
+              title={total === 0 ? 'No students to download' : `Download all ${total} matching students as a CSV file (opens in Excel / Google Sheets)`}
+              className="py-2 px-3 rounded-xl text-sm font-semibold border border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 disabled:opacity-50 disabled:cursor-not-allowed">
+              {downloading ? 'Preparing…' : `⬇ Download CSV · ${total}`}
+            </button>
+          )}
           <div className="relative">
             <svg className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
@@ -167,12 +320,13 @@ export default function ProgressListPage() {
       </div>
 
       {error && <p className="mb-4 text-sm text-rose-600 bg-rose-50 rounded-xl px-4 py-3">{error}</p>}
+      {downloadError && <p className="mb-4 text-sm text-rose-600 bg-rose-50 rounded-xl px-4 py-3">Download failed: {downloadError}</p>}
 
       <div className="bg-white rounded-2xl shadow-sm overflow-x-auto">
         <table className="w-full min-w-max text-sm">
           <thead>
             <tr className="border-b border-gray-100 text-xs font-semibold text-gray-400 uppercase tracking-wide">
-              {COLUMNS.map(c => (
+              {columns.map(c => (
                 <th key={c.label} className="text-left px-5 py-3.5">
                   {c.key ? (
                     <button onClick={() => sortBy(c.key)}
@@ -189,13 +343,15 @@ export default function ProgressListPage() {
             {loading ? (
               Array(8).fill(0).map((_, i) => (
                 <tr key={i} className="border-b border-gray-50">
-                  {COLUMNS.map((c) => (
+                  {columns.map((c) => (
                     <td key={c.label} className="px-5 py-3.5"><div className="h-4 bg-gray-100 rounded animate-pulse w-24" /></td>
                   ))}
                 </tr>
               ))
             ) : rows.length === 0 ? (
-              <tr><td colSpan={COLUMNS.length} className="px-5 py-10 text-center text-gray-400">No students found</td></tr>
+              <tr><td colSpan={columns.length} className="px-5 py-10 text-center text-gray-400">
+                {advCount ? 'No students match these filters' : 'No students found'}
+              </td></tr>
             ) : rows.map(s => {
               const enrol = enrollmentLabel(s)
               return (
@@ -231,6 +387,16 @@ export default function ProgressListPage() {
                       <p className="text-[11px] font-semibold text-amber-700 mt-0.5">{programNames(s.programs, programs)}</p>
                     )}
                   </td>
+                  {progressCols.map(c => {
+                    const p = s.subjectProgress?.[c.subjectId]
+                    return (
+                      <td key={c.key} className="px-5 py-3.5">
+                        {p
+                          ? <PercentCell percent={p.percent} detail={`${p.done}/${p.total} topics`} />
+                          : <span className="text-xs text-gray-400">Not studying</span>}
+                      </td>
+                    )
+                  })}
                   <td className="px-5 py-3.5 text-gray-500 text-xs whitespace-nowrap">{fmtDay(s.createdAt)}</td>
                   <td className="px-5 py-3.5">
                     <PercentCell
@@ -251,6 +417,19 @@ export default function ProgressListPage() {
           </tbody>
         </table>
       </div>
+
+      {advOpen && (
+        <ProgressFilterPanel
+          filter={adv} setFilter={setAdv}
+          subjects={subjects} programs={programs} allBatches={allBatches}
+          views={views} setViews={setViews}
+          activeViewId={activeViewId} setActiveViewId={setActiveViewId}
+          currentView={currentView} onApplyView={applyView}
+          onClearAll={clearAllFilters}
+          matchCount={total} loading={loading}
+          onClose={() => setAdvOpen(false)}
+        />
+      )}
 
       {total > 0 && (
         <div className="flex flex-wrap items-center justify-between gap-3 mt-4 text-sm text-gray-500">
