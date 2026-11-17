@@ -4,6 +4,9 @@ import { apiFetch, saveWithClashCheck } from '../../api'
 import AttendanceModal from '../../components/AttendanceModal'
 import SubmissionsModal from '../../components/SubmissionsModal'
 import SchedulerBoard from '../../components/SchedulerBoard'
+import SubjectOptions from '../../components/SubjectOptions'
+import PlannedItemsPicker from '../../components/PlannedItemsPicker'
+import { plannedItemsError, plannedPayload, savedPlannedNames } from '../../lib/plannedItems'
 
 function fmtWhen(d) {
   if (!d) return ''
@@ -378,6 +381,10 @@ export default function LiveClassesPage() {
       subjectId:  cls.subject?.subjectId ? String(cls.subject.subjectId) : '',
       chapterId:  cls.chapter?.chapterId ? String(cls.chapter.chapterId) : '',
       unitId:     cls.unit?.unitId ? String(cls.unit.unitId) : '',
+      planned: (cls.plannedItems || []).map(x => ({
+        chapterId: x.chapter?.chapterId ? String(x.chapter.chapterId) : '',
+        unitId: x.unit?.unitId ? String(x.unit.unitId) : '',
+      })),
       sessionType: cls.sessionType && cls.sessionType !== 'class' ? cls.sessionType : '',
       record: cls.recordingWanted === true,
       date: toDateInput(start), startTime: toTimeInput(start), endTime: toTimeInput(end),
@@ -402,11 +409,14 @@ export default function LiveClassesPage() {
         ...(end.getTime() !== new Date(edit.cls.scheduledEnd).getTime() ? { scheduledEnd: end.toISOString() } : {}),
       }
     } else {
+      const plannedErr = plannedItemsError(null, edit, edit.planned)
+      if (plannedErr) return setEdit(e => ({ ...e, error: plannedErr }))
       body = {
         // JSON drops undefined — an empty host means "leave the host alone",
         // while the curriculum ids always travel together as one pick.
         hostUserId: edit.hostUserId || undefined,
         subjectId: edit.subjectId, chapterId: edit.chapterId, unitId: edit.unitId,
+        plannedItems: edit.chapterId ? plannedPayload(edit.planned) : [],
       }
     }
     setEdit(e => ({ ...e, saving: true, error: '' }))
@@ -717,6 +727,20 @@ export default function LiveClassesPage() {
                         </span>
                       </p>
                     )}
+                    {/* Extra chapters planned for the same session; ✓ once the mentor ticked it finished */}
+                    {(c.plannedItems || []).length > 0 && (
+                      <p className="text-[11px] text-indigo-500 leading-snug break-words max-w-md">
+                        ＋ also planned: {(c.plannedItems || []).map((x, i) => {
+                          const done = (c.extraItems || []).some(e =>
+                            String(e.chapter?.chapterId) === String(x.chapter?.chapterId) && String(e.unit?.unitId || '') === String(x.unit?.unitId || ''))
+                          return (
+                            <span key={i} className={done ? 'text-teal-600 font-semibold' : ''}>
+                              {i ? ', ' : ''}{done ? '✓ ' : ''}{savedPlannedNames({ plannedItems: [x] })[0]}
+                            </span>
+                          )
+                        })}
+                      </p>
+                    )}
                     {c.description && <p className="text-xs text-gray-400 truncate max-w-xs">{c.description}</p>}
                   </td>
                   <td className="px-4 py-3">
@@ -842,10 +866,10 @@ export default function LiveClassesPage() {
                   <p className="text-[11px] font-bold text-gray-500 uppercase mb-1">What this class teaches</p>
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                     <select value={edit.subjectId}
-                      onChange={e => set({ subjectId: e.target.value, chapterId: '', unitId: '' })}
+                      onChange={e => set({ subjectId: e.target.value, chapterId: '', unitId: '', planned: [] })}
                       className="px-3 py-2 text-xs border border-gray-200 rounded-lg bg-white outline-none focus:ring-2 focus:ring-indigo-400">
                       <option value="">Subject…</option>
-                      {subjects.map(s => <option key={s._id} value={String(s._id)}>{s.name} ({s.level})</option>)}
+                      <SubjectOptions subjects={subjects} />
                     </select>
                     <select value={edit.chapterId} disabled={!subj}
                       onChange={e => set({ chapterId: e.target.value, unitId: '' })}
@@ -868,6 +892,14 @@ export default function LiveClassesPage() {
                   {edit.subjectId && !edit.chapterId && !!(subj?.chapters || []).length && (
                     <p className="text-[10px] text-amber-600 mt-1">Pick a chapter — a subject alone doesn't track progress.</p>
                   )}
+                  <div className="mt-2">
+                    <PlannedItemsPicker compact subject={subj} primary={edit}
+                      value={edit.planned} onChange={planned => set({ planned })} />
+                    {(() => {
+                      const err = plannedItemsError(subj, edit, edit.planned)
+                      return err && <p className="text-[10px] font-semibold text-red-600 mt-1">{err}</p>
+                    })()}
+                  </div>
                 </div>
                 )}
               </div>

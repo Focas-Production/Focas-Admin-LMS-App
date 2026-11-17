@@ -9,6 +9,9 @@ import {
 import ConditionList from './ConditionList'
 import SlotEditorModal from './SlotEditorModal'
 import { usePrograms, programNames, programFilterOptions, matchesProgram } from '../lib/programs'
+import SubjectOptions from './SubjectOptions'
+import PlannedItemsPicker from './PlannedItemsPicker'
+import { plannedItemsError, plannedPayload, plannedNames, savedPlannedNames } from '../lib/plannedItems'
 
 // Drag-and-drop class scheduler.
 //
@@ -60,7 +63,7 @@ const initials = (name = '') => {
 //   [PA] Mentor · Room 1 · Track 1 — 6–9 AM Slot     (coords in small print — admins
 //                                                     need them, students never see them)
 // Module-level so React keeps the same element type across board re-renders.
-function CellHead({ subject, chapter, unit, mentor, mentorWarn, slotTitle, live, roster }) {
+function CellHead({ subject, chapter, unit, more = [], mentor, mentorWarn, slotTitle, live, roster }) {
   return (
     <div className="mb-2">
       {/* Subject + live pill. Right padding keeps clear of the copy/paste buttons. */}
@@ -80,6 +83,12 @@ function CellHead({ subject, chapter, unit, mentor, mentorWarn, slotTitle, live,
         {chapter || 'No chapter'}
         {unit ? <span className="text-gray-500 font-medium"> · {unit}</span> : null}
       </p>
+      {/* Extra chapters/units planned for the same session */}
+      {more.length > 0 && (
+        <p className="pr-12 text-[11px] font-medium text-indigo-500 leading-snug break-words" title={more.join(', ')}>
+          ＋ {more.join(', ')}
+        </p>
+      )}
       {/* One line carries all three: mentor left, the head-count centred between
           them, room/track/slot coords right. The count rides here rather than on
           a line of its own so a booked cell stays three lines tall. */}
@@ -479,6 +488,7 @@ export default function SchedulerBoard({ rooms, hallRooms, hosts, classes, onCha
       cellId, day, slot, col,
       hostUserId: m.hostUserId || '',
       subjectId: m.subjectId || '', chapterId: m.chapterId || '', unitId: m.unitId || '',
+      planned: m.planned || [],
     })
   }
 
@@ -488,10 +498,11 @@ export default function SchedulerBoard({ rooms, hallRooms, hosts, classes, onCha
     const hostUserId = locked ? locked.id : setup.hostUserId
     if (!hostUserId || !setup.subjectId || !setup.chapterId) return
     const { cellId, day, slot, col, subjectId, chapterId, unitId } = setup
+    const planned = (setup.planned || []).filter(x => x.chapterId)
     setNewMeta(m => ({ ...m, [cellId]: {
       ...(m[cellId] || {}),
       title: m[cellId]?.title || `${col.roomLabel} · ${col.trackLabel} — ${slot.name}`,
-      hostUserId, subjectId, chapterId, unitId,
+      hostUserId, subjectId, chapterId, unitId, planned,
       day, slot, col,   // coords let sibling cells see this pick for mentor locking
     } }))
     setSetup(null)
@@ -683,7 +694,7 @@ export default function SchedulerBoard({ rooms, hallRooms, hosts, classes, onCha
         cellId, day, slot, col,
         hostUserId: clipboard.meta.hostUserId,
         subjectId: clipboard.meta.subjectId,
-        chapterId: '', unitId: '',
+        chapterId: '', unitId: '', planned: [],
       })
     } else {
       openSetup(day, slot, col)
@@ -896,6 +907,8 @@ export default function SchedulerBoard({ rooms, hallRooms, hosts, classes, onCha
           const hostUserId = locked ? locked.id : meta.hostUserId
           if (!hostUserId) throw new Error('Pick a host')
           if (!meta.subjectId || !meta.chapterId) throw new Error('Pick a subject and chapter')
+          const plannedErr = plannedItemsError(null, meta, meta.planned)
+          if (plannedErr) throw new Error(plannedErr)
           const start = new Date(day.getFullYear(), day.getMonth(), day.getDate(), slot.startHour)
           const end   = new Date(day.getFullYear(), day.getMonth(), day.getDate(), slot.endHour)
           await saveWithClashCheck((extra) => apiFetch('/api/live-classes/manage', {
@@ -907,6 +920,7 @@ export default function SchedulerBoard({ rooms, hallRooms, hosts, classes, onCha
               hostUserId, studentIds: ids,
               subjectId: meta.subjectId, chapterId: meta.chapterId,
               unitId: meta.unitId || undefined,
+              plannedItems: plannedPayload(meta.planned),
               ...extra,
             }),
           }), cellLabel(cell))
@@ -972,11 +986,7 @@ export default function SchedulerBoard({ rooms, hallRooms, hosts, classes, onCha
               onChange={e => { setSubjFilter(e.target.value); setChapFilter(''); setUnitFilter(''); setStatusFilter('all') }}
               className="w-full mt-2 px-2 py-1.5 text-xs border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-400 bg-white text-gray-600">
               <option value="">Any subject</option>
-              {(subjects || []).map(s => (
-                <option key={s._id} value={String(s._id)}>
-                  {s.name} · {s.level}{s.group ? ` ${s.group === 'group1' ? 'G1' : 'G2'}` : ''}
-                </option>
-              ))}
+              <SubjectOptions subjects={subjects} showGroup />
             </select>
 
             {/* Drill into the picked paper: chapter → unit → done/pending. The ✓
@@ -1288,6 +1298,7 @@ export default function SchedulerBoard({ rooms, hallRooms, hosts, classes, onCha
                                             className="block w-full text-left">
                                             <CellHead
                                               subject={cls.subject?.name} chapter={cls.chapter?.name} unit={cls.unit?.name}
+                                              more={savedPlannedNames(cls)}
                                               mentor={cls.host?.name} slotTitle={cls.title} live={cls.status === 'live'}
                                               mentorWarn={(() => {
                                                 const mc = mentorClashesFor(day, slot, col, cls.host?.userId, cellId)
@@ -1323,6 +1334,7 @@ export default function SchedulerBoard({ rooms, hallRooms, hosts, classes, onCha
                                               className="block w-full text-left">
                                               <CellHead
                                                 subject={subj?.name} chapter={chap?.name} unit={unit?.name}
+                                                more={plannedNames(subj, m.planned)}
                                                 mentor={hostName(m.hostUserId)}
                                                 mentorWarn={(() => {
                                                   const mc = mentorClashesFor(day, slot, col, m.hostUserId, cellId)
@@ -1646,7 +1658,8 @@ export default function SchedulerBoard({ rooms, hallRooms, hosts, classes, onCha
         const locked = roomLockedHost(setup.cellId, setup)
         const subj = subjects.find(s => String(s._id) === setup.subjectId)
         const chap = (subj?.chapters || []).find(c => String(c._id) === setup.chapterId)
-        const ready = (locked || setup.hostUserId) && setup.subjectId && setup.chapterId
+        const plannedErr = plannedItemsError(subj, setup, setup.planned)
+        const ready = (locked || setup.hostUserId) && setup.subjectId && setup.chapterId && !plannedErr
         const patch = (p) => setSetup(s => s && ({ ...s, ...p }))
         return (
           <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4"
@@ -1681,10 +1694,10 @@ export default function SchedulerBoard({ rooms, hallRooms, hosts, classes, onCha
                 })()}
 
                 <select value={setup.subjectId}
-                  onChange={e => patch({ subjectId: e.target.value, chapterId: '', unitId: '' })}
+                  onChange={e => patch({ subjectId: e.target.value, chapterId: '', unitId: '', planned: [] })}
                   className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg bg-white outline-none focus:ring-2 focus:ring-indigo-400">
                   <option value="">Subject…</option>
-                  {subjects.map(s => <option key={s._id} value={String(s._id)}>{s.name} ({s.level})</option>)}
+                  <SubjectOptions subjects={subjects} />
                 </select>
                 <select value={setup.chapterId} disabled={!subj}
                   onChange={e => patch({ chapterId: e.target.value, unitId: '' })}
@@ -1705,6 +1718,11 @@ export default function SchedulerBoard({ rooms, hallRooms, hosts, classes, onCha
                       <option key={u._id} value={String(u._id)}>{u.completed ? '✓ ' : ''}{u.name}</option>
                     ))}
                   </select>
+                )}
+                <PlannedItemsPicker subject={subj} primary={setup}
+                  value={setup.planned} onChange={planned => patch({ planned })} />
+                {plannedErr && setup.planned?.length > 0 && (
+                  <p className="text-[11px] font-semibold text-red-600">{plannedErr}</p>
                 )}
               </div>
 
@@ -1857,10 +1875,10 @@ export default function SchedulerBoard({ rooms, hallRooms, hosts, classes, onCha
                           {/* What this class teaches: subject → chapter, unit optional */}
                           <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                             <select value={meta.subjectId || ''}
-                              onChange={e => setMeta({ subjectId: e.target.value, chapterId: '', unitId: '' })}
+                              onChange={e => setMeta({ subjectId: e.target.value, chapterId: '', unitId: '', planned: [] })}
                               className="px-3 py-2 text-xs border border-gray-200 rounded-lg bg-white outline-none focus:ring-2 focus:ring-indigo-400">
                               <option value="">Subject…</option>
-                              {subjects.map(s => <option key={s._id} value={s._id}>{s.name} ({s.level})</option>)}
+                              <SubjectOptions subjects={subjects} />
                             </select>
                             <select value={meta.chapterId || ''} disabled={!subj}
                               onChange={e => setMeta({ chapterId: e.target.value, unitId: '' })}
@@ -1880,6 +1898,12 @@ export default function SchedulerBoard({ rooms, hallRooms, hosts, classes, onCha
                               ))}
                             </select>
                           </div>
+                          <PlannedItemsPicker compact subject={subj} primary={meta}
+                            value={meta.planned} onChange={planned => setMeta({ planned })} />
+                          {(() => {
+                            const err = plannedItemsError(subj, meta, meta.planned)
+                            return err && <p className="text-[10px] font-semibold text-red-600">{err}</p>
+                          })()}
                         </div>
                       )
                     })()}
