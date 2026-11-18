@@ -55,7 +55,7 @@ const STATUS_STYLE = {
 const STUDENT_APP = import.meta.env.VITE_STUDENT_APP_URL || 'http://localhost:5173'
 const trackUrl = (roomKey, trackKey) => `${STUDENT_APP}/live/${roomKey}/${trackKey}`
 
-// FOCAS Hall: announcements, inductions, introductions. Its tracks are separate
+// FOCAS Hall: announcements, inductions, faculty sessions. Its tracks are separate
 // sessions (any host, any times), so they are booked from their own form, not
 // the slot board. Session types come from the server's topology.
 const isHall = (room) => room?.kind === 'hall'
@@ -1142,7 +1142,7 @@ function HallSessionModal({ form, setForm, hallRooms, hosts, sessionTypes, onSav
       onClick={() => !form.saving && setForm(null)}>
       <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg p-5 max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
         <h2 className="text-base font-bold text-gray-900 mb-0.5">📣 Schedule a FOCAS Hall session</h2>
-        <p className="text-xs text-gray-400 mb-4">Announcements, inductions and introductions. Each Hall track is its own session — two hosts can run the two tracks at the same time.</p>
+        <p className="text-xs text-gray-400 mb-4">Announcements, inductions, faculty sessions and more. Each Hall track is its own session — two hosts can run the two tracks at the same time.</p>
 
         {form.error && <p className="text-xs text-red-500 mb-3">{form.error}</p>}
 
