@@ -1,11 +1,14 @@
 // One Foundation student's admission details: check each document (OK /
 // ask to re-upload with a reason the student sees), fix typed fields, or
-// upload a document for them (saved as OK). Opened from Student Details.
+// upload a document for them (saved as OK). Photos can be rotated / cropped
+// first (ImageEditModal). Opened from Student Details.
 import { useEffect, useRef, useState } from 'react'
 import { apiFetch } from '../api'
 import {
   STATUS_LABEL, STATUS_TONE, DOC_STATUS, phoneForInput, fmtDate, adminUploadDocument,
+  adminLoadDocument, adminSaveEditedDocument, editedName,
 } from '../lib/studentDetails'
+import ImageEditModal from './ImageEditModal'
 
 const inputCls = 'w-full px-3 py-2 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-indigo-500'
 
@@ -24,6 +27,9 @@ function DocPanel({ studentId, type, label, doc, options, onChange }) {
   const [reason, setReason] = useState('')
   const [progress, setProgress] = useState(null)
   const [error, setError] = useState('')
+  // Rotate / crop: { file, mode: 'edit' (the saved photo) | 'upload' (a new file picked here) }
+  const [editing, setEditing] = useState(null)
+  const [loadingEdit, setLoadingEdit] = useState(false)
   const fileRef = useRef(null)
   const base = `/api/admin/users/${studentId}/student-details/documents/${type}`
 
@@ -47,13 +53,52 @@ function DocPanel({ studentId, type, label, doc, options, onChange }) {
     e.target.value = ''
     if (!f) return
     if (doc && !window.confirm(`Replace the student's ${label}? The old file will be deleted.`)) return
+    setError('')
+    // Photos open in the editor first; PDFs go straight up.
+    if (f.type.startsWith('image/') && options.allowedTypes.includes(f.type)) { setEditing({ file: f, mode: 'upload' }); return }
+    await sendUpload(f)
+  }
+
+  async function sendUpload(f) {
     setError(''); setProgress(0)
     try { onChange((await adminUploadDocument(studentId, type, f, options)).details) }
     catch (err) { setError(err.message) }
     finally { setProgress(null) }
   }
 
+  async function openEditor() {
+    setError(''); setLoadingEdit(true)
+    try { setEditing({ file: await adminLoadDocument(studentId, type), mode: 'edit' }) }
+    catch (err) { setError(err.message) }
+    finally { setLoadingEdit(false) }
+  }
+
+  // blob = the edited JPEG, or null when nothing was changed. A failed save
+  // throws, so the editor stays open with the error and the admin can retry
+  // without redoing the rotate / crop — except when the student replaced
+  // the file meanwhile: then the edit is pointless, so close and say so.
+  async function saveEdit(blob) {
+    const { file, mode } = editing
+    if (mode === 'upload') {
+      const f = blob ? new File([blob], editedName(file.name), { type: 'image/jpeg' }) : file
+      const r = await adminUploadDocument(studentId, type, f, options)
+      setEditing(null)
+      onChange(r.details)
+      return
+    }
+    if (!blob) { setEditing(null); return }
+    try {
+      const r = await adminSaveEditedDocument(studentId, type, blob, doc.key, editedName(doc.name))
+      setEditing(null)
+      onChange(r.details)
+    } catch (err) {
+      if (err.status !== 409) throw err
+      setEditing(null); setError(err.message)
+    }
+  }
+
   const isPdf = doc?.contentType === 'application/pdf'
+  const isImage = !!doc?.contentType?.startsWith('image/')
   return (
     <div className="border border-gray-100 rounded-xl p-3">
       <div className="flex items-center justify-between gap-2">
@@ -74,7 +119,14 @@ function DocPanel({ studentId, type, label, doc, options, onChange }) {
           {isPdf
             ? <iframe title={label} src={url} className="w-full h-72 rounded-lg border border-gray-100" />
             : <img src={url} alt={label} className="w-full max-h-72 object-contain rounded-lg bg-gray-50" />}
-          <a href={url} target="_blank" rel="noreferrer" className="text-xs text-indigo-600 font-semibold">Open full size ↗</a>
+          <div className="flex items-center gap-3">
+            <a href={url} target="_blank" rel="noreferrer" className="text-xs text-indigo-600 font-semibold">Open full size ↗</a>
+            {isImage && (
+              <button disabled={loadingEdit} onClick={openEditor} className="text-xs text-indigo-600 font-semibold disabled:opacity-60">
+                {loadingEdit ? 'Opening…' : '⟳ Rotate / crop'}
+              </button>
+            )}
+          </div>
         </div>
       )}
 
@@ -105,6 +157,15 @@ function DocPanel({ studentId, type, label, doc, options, onChange }) {
         : <button onClick={() => fileRef.current?.click()} className="mt-2 text-[11px] text-gray-500 underline">{doc ? 'Replace with a file I have' : 'Upload for the student'}</button>}
       <input ref={fileRef} type="file" className="hidden" accept={options.allowedTypes.join(',')} onChange={upload} />
       {error && <p className="text-xs text-rose-600 mt-2">{error}</p>}
+      {editing && (
+        <ImageEditModal
+          file={editing.file}
+          title={`${label} — rotate / crop`}
+          saveLabel={editing.mode === 'upload' ? 'Upload' : 'Save'}
+          onCancel={() => setEditing(null)}
+          onSave={saveEdit}
+        />
+      )}
     </div>
   )
 }

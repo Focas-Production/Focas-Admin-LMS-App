@@ -1,6 +1,6 @@
 // Foundation students' admission details — labels + admin upload helper.
 // Server: server/services/studentDetailsService.js.
-import { apiFetch } from '../api'
+import { apiFetch, authHeaders } from '../api'
 
 export const STATUS_OPTIONS = [
   { key: 'submitted',   label: 'Waiting for check', tone: 'indigo' },
@@ -39,3 +39,27 @@ export async function adminUploadDocument(studentId, type, file, { allowedTypes,
   form.append('file', file)
   return apiFetch(`/api/admin/users/${studentId}/student-details/documents/${type}`, { method: 'POST', body: form, isForm: true })
 }
+
+// The current file's bytes (through the server, so a canvas can draw it).
+export async function adminLoadDocument(studentId, type) {
+  const headers = authHeaders()
+  delete headers['Content-Type']
+  const res = await fetch(`${import.meta.env.VITE_API_BASE}/api/admin/users/${studentId}/student-details/documents/${type}/file`, { headers })
+  if (!res.ok) {
+    let msg = 'Could not load the file'
+    try { msg = (await res.json()).error || msg } catch { /* not JSON */ }
+    throw new Error(msg)
+  }
+  return res.blob()
+}
+
+// Save a rotated / cropped photo over the document; its check status stays as it was.
+export async function adminSaveEditedDocument(studentId, type, blob, key, name) {
+  const form = new FormData()
+  form.append('key', key)
+  form.append('file', blob, name)
+  return apiFetch(`/api/admin/users/${studentId}/student-details/documents/${type}/edit`, { method: 'POST', body: form, isForm: true })
+}
+
+// "marksheet.png" → "marksheet-edited.jpg"
+export const editedName = (name) => `${String(name || 'photo').replace(/\.[^.]+$/, '').replace(/-edited$/, '')}-edited.jpg`
