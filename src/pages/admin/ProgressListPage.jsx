@@ -77,6 +77,7 @@ const COLUMNS = [
   { key: null,         label: 'Enrolled for' },
   { key: 'joined',     label: 'Joined' },
   { key: 'attendance', label: 'Attendance' },
+  { key: null,         label: 'FOCAS Hall' },
   { key: 'tests',      label: 'Test score' },
   { key: 'lastClass',  label: 'Last class' },
 ]
@@ -403,6 +404,12 @@ export default function ProgressListPage() {
                       percent={s.attendance.sessions ? s.attendance.percent : null}
                       empty="No classes yet"
                       detail={`${s.attendance.present}/${s.attendance.sessions} classes`} />
+                  </td>
+                  {/* FOCAS Hall sessions — never part of Attendance */}
+                  <td className="px-5 py-3.5 text-xs whitespace-nowrap">
+                    {s.hall?.sessions
+                      ? <span className="text-gray-700"><b>{s.hall.present}</b> of {s.hall.sessions} attended</span>
+                      : <span className="text-gray-400">None</span>}
                   </td>
                   <td className="px-5 py-3.5">
                     <PercentCell

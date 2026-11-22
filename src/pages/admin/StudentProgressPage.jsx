@@ -106,8 +106,8 @@ function StatCard({ label, value, tone = 'gray', sub, hint, bar }) {
       <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">{label}</p>
       <p className={`text-2xl font-bold mt-1 leading-tight ${TEXT_TONES[tone] || 'text-gray-900'}`}>{value}</p>
       {bar != null && <Bar percent={bar} tone={tone === 'gray' ? 'indigo' : tone} className="mt-2" />}
-      {sub && <p className="text-xs text-gray-500 mt-1.5 truncate" title={sub}>{sub}</p>}
-      {hint && <p className="text-[11px] text-gray-400 mt-0.5 truncate" title={hint}>{hint}</p>}
+      {sub && <p className="text-xs text-gray-500 mt-1.5 truncate" title={typeof sub === 'string' ? sub : undefined}>{sub}</p>}
+      {hint && <p className="text-[11px] text-gray-400 mt-0.5 truncate" title={typeof hint === 'string' ? hint : undefined}>{hint}</p>}
     </div>
   )
 }
@@ -634,7 +634,9 @@ const ATT_BADGE = {
 }
 
 function AttendanceSection({ studentId, attemptId }) {
-  const [filters, setFilters] = useState({ page: 1, limit: 20, status: '', subjectId: '', dateFrom: '', dateTo: '', attemptId })
+  // kind: 'class' = classes (what Attendance counts) · 'hall' = FOCAS Hall sessions
+  const [filters, setFilters] = useState({ page: 1, limit: 20, status: '', subjectId: '', dateFrom: '', dateTo: '', attemptId, kind: 'class' })
+  const isHall = filters.kind === 'hall'
   const set = (patch) => setFilters(f => ({ ...f, page: 1, ...patch }))
   const { data, error, loading } = useResource(`/api/admin/users/${studentId}/attendance-log`, filters)
 
@@ -644,10 +646,14 @@ function AttendanceSection({ studentId, attemptId }) {
 
   return (
     <Section id="attendance" index={2} title="Attendance log"
-      subtitle={`One row per class this student was on the roster for.${lateMins ? ` Present but joining more than ${lateMins} min late is flagged Late.` : ''}`}>
+      subtitle={`One row per ${isHall ? 'FOCAS Hall session' : 'class'} this student was on the roster for.${lateMins ? ` Present but joining more than ${lateMins} min late is flagged Late.` : ''}${isHall ? ' Hall sessions are not counted in attendance.' : ''}`}>
+      <div className="flex gap-1 px-5 pt-4">
+        <Chip active={!isHall} onClick={() => set({ kind: 'class', subjectId: '' })}>Classes</Chip>
+        <Chip active={isHall} onClick={() => set({ kind: 'hall', subjectId: '' })}>FOCAS Hall</Chip>
+      </div>
       {s && (
         <Tallies items={[
-          { label: 'Classes',   value: s.sessions },
+          { label: isHall ? 'Sessions' : 'Classes', value: s.sessions },
           { label: 'Present',   value: s.present, tone: 'emerald' },
           { label: 'Late',      value: s.late,    tone: 'amber' },
           { label: 'Absent',    value: s.absent,  tone: 'rose' },
@@ -2538,8 +2544,8 @@ export default function StudentProgressPage() {
     return (
       <div className="p-6 space-y-4">
         <div className="h-24 bg-white rounded-2xl shadow-sm animate-pulse" />
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-          {Array(5).fill(0).map((_, i) => <div key={i} className="h-24 bg-white rounded-2xl shadow-sm animate-pulse" />)}
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+          {Array(6).fill(0).map((_, i) => <div key={i} className="h-24 bg-white rounded-2xl shadow-sm animate-pulse" />)}
         </div>
         <div className="h-64 bg-white rounded-2xl shadow-sm animate-pulse" />
       </div>
@@ -2557,7 +2563,8 @@ export default function StudentProgressPage() {
     )
   }
 
-  const { student, syllabus, classes, attendance, tests, lectures, forecast, thresholdPercent } = report
+  const { student, syllabus, classes, attendance, hallAttendance, tests, lectures, forecast, thresholdPercent } = report
+  const hall = hallAttendance || { sessions: 0, present: 0, attendedMs: 0, durationMs: 0, percent: 0 }
   // The batch on screen; the sections below remount per batch so their own
   // filters and pages start clean.
   const attempt = report.attempt
@@ -2622,14 +2629,20 @@ export default function StudentProgressPage() {
         </div>
       )}
 
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
         <StatCard label="Overall progress" value={`${syllabus.percent}%`} tone={toneFor(syllabus.percent)} bar={syllabus.percent}
           sub={`${syllabus.completedItems} of ${syllabus.totalItems} topics done`}
           hint={`${syllabus.completedChapters}/${syllabus.totalChapters} chapters · ${syllabus.completedSubjects}/${syllabus.totalSubjects} subjects`} />
 
         <StatCard label="Attendance" value={`${attendance.percent}%`} tone={toneFor(attendance.percent)} bar={attendance.percent}
-          sub={`${attendance.present} of ${attendance.sessions} classes cleared`}
-          hint={`${fmtMs(attendance.attendedMs)} attended${thresholdPercent != null ? ` · bar is ${thresholdPercent}%` : ''}`} />
+          sub={<span className="text-gray-700"><b className="font-semibold text-gray-900">{attendance.present}</b> of <b className="font-semibold text-gray-900">{attendance.sessions}</b> classes cleared</span>}
+          hint={<span className="text-gray-600"><b className="font-semibold text-gray-900">{fmtMs(attendance.attendedMs)}</b> of <b className="font-semibold text-gray-900">{fmtMs(attendance.durationMs)}</b> attended{thresholdPercent != null && <> · bar is <b className="font-semibold text-gray-900">{thresholdPercent}%</b></>}</span>} />
+
+        {/* FOCAS Hall sessions (announcements, inductions, …) — never part of Attendance */}
+        <StatCard label="FOCAS Hall" value={hall.sessions ? `${hall.percent}%` : '—'}
+          tone={hall.sessions ? toneFor(hall.percent) : 'gray'} bar={hall.sessions ? hall.percent : null}
+          sub={hall.sessions ? <span className="text-gray-700"><b className="font-semibold text-gray-900">{hall.present}</b> of <b className="font-semibold text-gray-900">{hall.sessions}</b> sessions attended</span> : 'No Hall sessions yet'}
+          hint={hall.sessions ? <span className="text-gray-600"><b className="font-semibold text-gray-900">{fmtMs(hall.attendedMs)}</b> of <b className="font-semibold text-gray-900">{fmtMs(hall.durationMs)}</b> attended · not in attendance</span> : 'Not counted in attendance'} />
 
         <StatCard label="Test average"
           value={tests.evaluated ? `${tests.averagePercent}%` : '—'}
