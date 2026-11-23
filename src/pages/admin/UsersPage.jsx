@@ -4,6 +4,7 @@ import { apiFetch } from '../../api'
 import { CA_LEVELS, CA_GROUPS, groupLabel, ATTEMPT_MONTHS, upcomingAttempts } from '../../lib/ca'
 import SlotEditorModal from '../../components/SlotEditorModal'
 import { availabilityLabel, hasSlotAvailability } from '../../lib/rosterFilter'
+import { TUTOR_DESIGNATIONS } from '../../lib/tutorDesignations'
 import { usePrograms, programNames, programFilterOptions, CLASS_STATUSES, isClassStudent, classStatusByKey, STUDENT_STATUSES, studentStatusByKey } from '../../lib/programs'
 import ParentContactModal from '../../components/ParentContactModal'
 import { showPhone } from '../../lib/parentReport'
@@ -1675,8 +1676,12 @@ export default function UsersPage() {
                         <StatusPicker user={u} field="studentStatus" path="student-status" options={STUDENT_STATUSES}
                           label="Student status" onSaved={load} />
                       </div>
+                    ) : u.isMentor ? (
+                      // Pay grade — decides the hourly rate in the Action Center's cost-per-student check.
+                      <StatusPicker user={u} field="tutorDesignation" path="tutor-designation" options={TUTOR_DESIGNATIONS}
+                        label="Tutor designation" onSaved={load} />
                     ) : (
-                      <span className="text-gray-300" title={u.isAdmin || u.isMentor ? '' : 'Only Class students have a status — tick Class in Course → Program'}>—</span>
+                      <span className="text-gray-300" title={u.isAdmin ? '' : 'Only Class students have a status — tick Class in Course → Program'}>—</span>
                     )}
                   </td>
                   <td className="px-5 py-3.5 text-gray-400 text-xs">{fmtDate(u.createdAt)}</td>

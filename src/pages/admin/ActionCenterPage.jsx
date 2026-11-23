@@ -310,6 +310,109 @@ function HiddenDrawer({ onClose, onChanged }) {
 
 // ── Drill-down drawer ────────────────────────────────────────────────────────
 
+// Class strength date filter — IST calendar days as 'YYYY-MM-DD'.
+const IST_MS = 330 * 60000
+const istToday = () => new Date(Date.now() + IST_MS).toISOString().slice(0, 10)
+const addDays = (day, n) => { const d = new Date(`${day}T00:00:00Z`); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10) }
+const monthRange = (offset) => {
+  const [y, m] = istToday().split('-').map(Number)
+  const first = new Date(Date.UTC(y, m - 1 + offset, 1))
+  const last = new Date(Date.UTC(y, m + offset, 0))
+  return { from: first.toISOString().slice(0, 10), to: last.toISOString().slice(0, 10) }
+}
+const MAX_RANGE_DAYS = 92
+const dayCount = (from, to) => Math.round((new Date(`${to}T00:00:00Z`) - new Date(`${from}T00:00:00Z`)) / 86400000) + 1
+const fmtDay = d => new Date(`${d}T00:00:00Z`).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' })
+
+// range null = the card itself (7 days back + 7 ahead, only slots over the limit).
+function ClassCostFilter({ range, onChange, summary, loading }) {
+  const [from, setFrom] = useState(range?.from || addDays(istToday(), -7))
+  const [to, setTo] = useState(range?.to || addDays(istToday(), 7))
+  const [all, setAll] = useState(!!range?.all)
+  const [err, setErr] = useState('')
+  const apply = (next) => {
+    if (next.from > next.to) return setErr('From must be on or before To')
+    if (dayCount(next.from, next.to) > MAX_RANGE_DAYS) return setErr(`Pick at most ${MAX_RANGE_DAYS} days at a time`)
+    setErr(''); setFrom(next.from); setTo(next.to); onChange(next)
+  }
+  const preset = (r) => apply({ ...r, all })
+  const isCard = !range
+  const PRESETS = [
+    { label: 'This month', ...monthRange(0) },
+    { label: 'Last month', ...monthRange(-1) },
+    { label: 'Next month', ...monthRange(1) },
+  ]
+  const chip = (active) => `text-xs font-medium px-2.5 py-1 rounded-full ring-1 transition-colors ${
+    active ? 'bg-indigo-600 text-white ring-indigo-600' : 'bg-white text-gray-600 ring-gray-200 hover:bg-gray-50'}`
+  return (
+    <div className="px-5 py-3 border-b border-gray-100 space-y-2 bg-gray-50/60">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <button onClick={() => { setErr(''); setAll(false); setFrom(addDays(istToday(), -7)); setTo(addDays(istToday(), 7)); onChange(null) }}
+          className={chip(isCard)}>Last 7 + next 7 days</button>
+        {PRESETS.map(p => (
+          <button key={p.label} onClick={() => preset(p)}
+            className={chip(!isCard && range.from === p.from && range.to === p.to)}>{p.label}</button>
+        ))}
+      </div>
+      <div className="flex flex-wrap items-center gap-2 text-xs text-gray-600">
+        <label className="flex items-center gap-1">From
+          <input type="date" value={from} max={to} onChange={e => e.target.value && apply({ from: e.target.value, to, all })}
+            className="rounded-md border border-gray-200 bg-white px-1.5 py-1 focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+        </label>
+        <label className="flex items-center gap-1">To
+          <input type="date" value={to} min={from} onChange={e => e.target.value && apply({ from, to: e.target.value, all })}
+            className="rounded-md border border-gray-200 bg-white px-1.5 py-1 focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+        </label>
+        <label className="flex items-center gap-1.5 ml-1">
+          <input type="checkbox" checked={all} onChange={e => { setAll(e.target.checked); apply({ from, to, all: e.target.checked }) }} />
+          Include slots within limit
+        </label>
+      </div>
+      {err && <p className="text-xs text-red-600">{err}</p>}
+      {!isCard && summary && (
+        <p className={`text-xs text-gray-700 ${loading ? 'opacity-50' : ''}`}>
+          <b>{fmtDay(range.from)} – {fmtDay(range.to)}</b> · {summary.slots} slot{summary.slots === 1 ? '' : 's'}
+          {range.all && <> · <span className="text-red-600 font-medium">{summary.overLimit} over limit</span></>}
+          {' '}· <span title="Each student counted once per session they are booked into">{summary.students} student seats</span> · mentor cost <b>{rupees(summary.mentorCost)}</b>
+          {' '}· <b>{summary.perStudent == null ? '—' : rupees(summary.perStudent)}</b> per student
+          {summary.emptySeatsCost > 0 && <> · empty seats {rupees(summary.emptySeatsCost)}</>}
+        </p>
+      )}
+      {isCard && <p className="text-[11px] text-gray-400">Showing the card: slots over the limit, 7 days back and 7 ahead. Pick dates to see any period.</p>}
+    </div>
+  )
+}
+
+const rupees = v => `₹${Number(v || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`
+
+// Class strength rows: what the slot costs per student vs the limit, and how
+// full each track of the room is.
+function CostBreakdown({ cost, tracks = [], within = false }) {
+  const perTrack = cost.perTrack || 10
+  return (
+    <div className="mt-1.5 rounded-lg bg-gray-50 px-3 py-2 text-xs">
+      <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-gray-600">
+        <span>Per student <b className={within ? 'text-emerald-700' : 'text-red-600'}>{cost.perStudent == null ? '—' : rupees(cost.perStudent)}</b></span>
+        <span>Limit <b className="text-gray-800">{rupees(cost.limit)}</b></span>
+        <span>Mentor cost <b className="text-gray-800">{rupees(cost.total)}</b> ({cost.hours} h × {rupees(cost.rate)})</span>
+        {cost.extra > 0 && <span>Empty seats cost <b className="text-gray-800">{rupees(cost.extra)}</b></span>}
+      </div>
+      {tracks.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 mt-1.5">
+          {tracks.map(tr => (
+            <span key={tr.key} title={tr.subjects?.join(', ') || ''}
+              className={`px-1.5 py-0.5 rounded ring-1 ${!tr.booked ? 'bg-white text-gray-400 ring-gray-200'
+                : tr.students < perTrack ? 'bg-amber-50 text-amber-800 ring-amber-200' : 'bg-emerald-50 text-emerald-700 ring-emerald-200'}`}>
+              {tr.label}: {tr.booked ? `${tr.students}/${perTrack}` : 'not booked'}
+              {tr.subjects?.length > 0 && <span className="text-gray-500"> · {tr.subjects.join(', ')}</span>}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function ItemRow({ item, busy, onAction, onDismiss, onOpenLink, scenarioByKey }) {
   const chips = (item.tags || []).map(t => scenarioByKey[t]).filter(Boolean)
   // "Mark reviewed" opens a short note box first — what was done about it.
@@ -338,8 +441,9 @@ function ItemRow({ item, busy, onAction, onDismiss, onOpenLink, scenarioByKey })
             </p>
           )}
           {item.kind === 'class' && (item.reasons || []).length > 0 && (
-            <p className="text-xs font-medium text-red-600 mt-0.5">{item.reasons.join(' · ')}</p>
+            <p className={`text-xs font-medium mt-0.5 ${item.withinLimit ? 'text-emerald-700' : 'text-red-600'}`}>{item.reasons.join(' · ')}</p>
           )}
+          {item.cost && <CostBreakdown cost={item.cost} tracks={item.tracks} within={item.withinLimit} />}
           {item.detail && <p className="text-xs text-gray-400 mt-0.5">{item.detail}</p>}
           {item.at && (
             <p className="text-[11px] text-gray-400 mt-1">
@@ -412,14 +516,28 @@ function Drawer({ listKey, initialScenario, onClose, onChanged }) {
   const [scenario, setScenario] = useState(initialScenario || '')
   const [tab, setTab] = useState('open')   // 'open' | 'hidden'
   const [reloadTick, setReloadTick] = useState(0)
+  // Class strength only: a From–To range ({ from, to, all }) instead of the card's 7 days.
+  const [costRange, setCostRange] = useState(null)
+  const [rangeLoading, setRangeLoading] = useState(false)
+  const [cardMeta, setCardMeta] = useState(null)   // the card's title + hint, kept while a range is shown
 
   useEffect(() => {
     let alive = true
-    apiFetch(`/api/admin/action-center/list/${listKey}`)
-      .then(d => { if (alive) setData(d) })
+    const url = costRange
+      ? `/api/admin/action-center/class-cost?${new URLSearchParams({ from: costRange.from, to: costRange.to, ...(costRange.all ? { all: '1' } : {}) })}`
+      : `/api/admin/action-center/list/${listKey}`
+    apiFetch(url)
+      .then(d => {
+        if (!alive) return
+        if (!costRange) setCardMeta({ title: d.title, hint: d.hint })
+        setData(d); setError('')
+      })
       .catch(e => { if (alive) setError(e.message) })
+      .finally(() => { if (alive) setRangeLoading(false) })
     return () => { alive = false }
-  }, [listKey, reloadTick])
+  }, [listKey, reloadTick, costRange])
+
+  const changeRange = (r) => { setRangeLoading(true); setScenario(''); setCostRange(r) }
 
   async function dismiss(item, note, days) {
     setBusyId(item.id)
@@ -482,8 +600,8 @@ function Drawer({ listKey, initialScenario, onClose, onChanged }) {
       <aside className="relative w-full max-w-xl h-full bg-white shadow-xl flex flex-col">
         <div className="px-5 py-4 border-b border-gray-100 flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <h3 className="font-semibold text-gray-900">{data?.title || 'Loading…'}</h3>
-            {data?.hint && <p className="text-xs text-gray-400 mt-0.5">{data.hint}</p>}
+            <h3 className="font-semibold text-gray-900">{data?.title || cardMeta?.title || 'Loading…'}</h3>
+            {(data?.hint || cardMeta?.hint) && <p className="text-xs text-gray-400 mt-0.5">{data?.hint || cardMeta?.hint}</p>}
           </div>
           <button onClick={onClose} aria-label="Close"
             className="text-gray-400 hover:text-gray-700 text-xl leading-none px-1">×</button>
@@ -508,6 +626,9 @@ function Drawer({ listKey, initialScenario, onClose, onChanged }) {
         )}
 
         {tab === 'open' && <>
+        {listKey === 'classCost' && cardMeta && (
+          <ClassCostFilter range={costRange} onChange={changeRange} summary={costRange ? data?.summary : null} loading={rangeLoading} />
+        )}
         {data && data.total > 0 && (
           <div className="px-5 py-3 border-b border-gray-100 flex items-center gap-3">
             <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search name, phone, class…"
@@ -582,6 +703,16 @@ export default function ActionCenterPage() {
   const refresh = () => { setLoading(true); load(true) }
 
   useEffect(() => { load() }, [load])
+
+  // An answer older than a minute came from the server's saved copy, which is
+  // being rebuilt right now — ask once more shortly to show the new numbers.
+  // (Same generatedAt again → this doesn't re-run, so it never loops.)
+  const generatedAt = data?.generatedAt
+  useEffect(() => {
+    if (!generatedAt || Date.now() - new Date(generatedAt).getTime() < 60_000) return
+    const timer = setTimeout(() => load(), 4000)
+    return () => clearTimeout(timer)
+  }, [generatedAt, load])
 
   // Counts go stale while the admin works; refresh them when they come back to the tab.
   useEffect(() => {
